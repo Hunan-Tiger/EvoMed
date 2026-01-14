@@ -55,6 +55,9 @@ def summarize_prompt(problem, trajectory, evaluation, groundtruth):
 **Evaluation:** {evaluation}'''
 
 
+
+
+
 controller_system_prompt = r'''You are the Guardian of the Medical Knowledge Base.
 You receive a summary of a diagnostic failure. Your job is to generate a JSON instruction to update the Knowledge Base (KB).
 
@@ -90,7 +93,6 @@ You receive a summary of a diagnostic failure. Your job is to generate a JSON in
 ]
 ```
 '''
-
 
 def controller_prompt(problem, trajectories, ground_truth, knowledges):
     return rf'''**Question:** {problem}

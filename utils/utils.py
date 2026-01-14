@@ -344,13 +344,6 @@ def calculate_word_recall(ground_truth, prediction):
     recall = len(intersection) / len(gt_words)
     return recall
 
-def calculate_metrics_from_rewards(all_rewards):
-    """基于评估器奖励计算ACC"""
-    total = len(all_rewards)
-    correct = sum(1 for r in all_rewards if r == 'correct')
-    accuracy = correct / total if total > 0 else 0.0
-    return accuracy
-
 
 API_KEY_list = {
     'lijm': "sk-0e4ecba324df49bf80a831dd9bc67ba8",

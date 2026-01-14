@@ -325,6 +325,8 @@ def main(args):
         from utils.datasets import get_slake as process_dataset
     elif args.exp_name == "vqa-rad":
         from utils.datasets import get_vqarad as process_dataset
+    elif args.exp_name == "omni-rad-closed":
+        from utils.datasets import get_omni_rad_closed as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
@@ -429,7 +431,7 @@ def main(args):
                 total_wrong = sum(1 for m in all_metrics if m == 'wrong')
                 total_samples = total_correct + total_wrong
                 strict_acc = total_correct / total_samples * 100 if total_samples > 0 else 0
-                logging.info(f"  Cumulative Strict Accuracy: {strict_acc:.2f}% ({total_correct}/{total_samples})")
+                logging.info(f"  Cumulative Accuracy: {strict_acc:.2f}% ({total_correct}/{total_samples})")
             else:
                 avg_recall = sum(all_metrics) / len(all_metrics) if all_metrics else 0
                 logging.info(f"  Cumulative Average Recall: {avg_recall:.4%} ({sum(all_metrics):.4f} total recall over {len(all_metrics)} samples)")
@@ -463,7 +465,7 @@ def main(args):
         logging.info(f"  Correct: {total_correct}")
         logging.info(f"  Wrong: {total_wrong}")
         acc = total_correct / total_samples * 100
-        logging.info(f"  Strict Accuracy: {acc:.2f}%")
+        logging.info(f"  Accuracy: {acc:.2f}%")
     else:
         logging.info("RECALL METRICS")
         logging.info("-" * 40)
@@ -483,7 +485,7 @@ def main(args):
         eval_={
             'correct': total_correct,
             'wrong': total_wrong,
-            'strict_accuracy': total_correct / total_samples * 100 if total_samples > 0 else 0,
+            'accuracy': total_correct / total_samples * 100 if total_samples > 0 else 0,
         }
     else:
         eval_={
@@ -545,7 +547,7 @@ if __name__ == "__main__":
     parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
     parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
 
-    parser.add_argument("--exp_name", "--en", type=str, default="slake", choices=["vqa-rad", "slake"], help="Experiment name")
+    parser.add_argument("--exp_name", "--en", type=str, default="slake", help="Experiment name")
     parser.add_argument("--data_split", type=str, default="test", help="Dataset split")
     parser.add_argument("--dataset_truncate", "--dt", type=int, default=50, help="Truncate dataset")
     parser.add_argument("--answer_type", "--at", type=str, default="all", choices=["closed", "open", "all"])

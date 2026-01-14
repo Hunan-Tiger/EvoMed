@@ -39,21 +39,21 @@ QUESTION_TYPE_TAGS = {
     "color": 7,
     
     # # 诊断推理类
-    "diagnosis": 18,
+    "diagnosis": 8,
     # "differential": 19,
     # "prognosis": 20,
     # "staging": 21,
     
     # # 计数和存在性
-    "quantity": 8,
-    "presence": 9,
+    "quantity": 9,
+    "presence": 10,
     # "comparison": 24,
     
     # # 常识和知识类
-    "anatomy": 10,
-    "organ":11,
+    "anatomy": 11,
+    "organ":12,
     # "physiology": 26,
-    "common_sense": 12,
+    "common_sense": 13,
     # "procedure": 28,
 }
 
