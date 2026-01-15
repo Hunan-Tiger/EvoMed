@@ -588,7 +588,7 @@ def main(args):
                 logging.info(f"  Epoch progress: {idx+1}/{len(data)} ({(idx+1)/len(data)*100:.1f}%)")
 
                 if args.answer_type == 'closed':
-                    logging.info(f"  Epoch stats - Correct: {epoch_correct}, Wrong: {epoch_wrong}, Epoch accuracy: {(epoch_correct/(epoch_correct+epoch_wrong)):.2f}%")
+                    logging.info(f"  Epoch stats - Correct: {epoch_correct}, Wrong: {epoch_wrong}, Epoch accuracy: {(epoch_correct/(epoch_correct+epoch_wrong))*100:.2f}%")
                 else:
                     logging.info(f"  Sample recalls: {recalls}, Average recall: {avg_recall:.4f}")
                 
@@ -608,7 +608,7 @@ def main(args):
         logging.info(f"Epoch time: {epoch_time:.2f}s ({epoch_time/60:.2f} min)")
 
         if args.answer_type == 'closed':
-            logging.info(f"  Epoch stats - Correct: {epoch_correct}, Wrong: {epoch_wrong}, Epoch accuracy: {(epoch_correct/(epoch_correct+epoch_wrong)):.2f}%")
+            logging.info(f"  Epoch stats - Correct: {epoch_correct}, Wrong: {epoch_wrong}, Epoch accuracy: {(epoch_correct/(epoch_correct+epoch_wrong))*100:.2f}%")
         else:
             if epoch_recalls:
                 epoch_avg_recall = sum(epoch_recalls) / (len(epoch_recalls)*args.grpo_n)
