@@ -333,7 +333,7 @@ def get_slake(truncate=None, split='train', answer_type='closed', content_type='
     return dataset
 
 
-def get_omni_rad_closed(split, **kwargs):
+def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
     '''
     Data format:
     {
@@ -352,9 +352,15 @@ def get_omni_rad_closed(split, **kwargs):
     "closed_type": "MCQ"
   },
     '''
+    random.seed(seed)
+    
     import json
-    with open(r'datasets/OmniMedVQA-Radiology-Closed/radiology_closedset_test.json', 'r', encoding='utf-8') as f:
-        data = json.load(f)
+    if split == 'test':
+        with open(r'datasets/OmniMedVQA-Radiology-Closed/radiology_closedset_test.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    else:
+        with open(r'datasets/OmniMedVQA-Radiology-Closed/radiology_closedset_train.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
 
     print(data[0])
     dataset = []
@@ -407,5 +413,10 @@ def get_omni_rad_closed(split, **kwargs):
                     'answer':answer,
                     'content_type': item['question_type'].lower(),
                 })
+    logging.info(f"Filtered dataset size after processing: {len(dataset)}")
+    random.shuffle(dataset)
+    if truncate is not None and truncate > 0 and truncate < len(dataset):
+        dataset = dataset[:truncate]
+        logging.info(f"Dataset truncated to first {len(dataset)} samples")
     return dataset
     

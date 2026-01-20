@@ -91,6 +91,15 @@ ORGAN_TISSUE_TAGS = {
     "stomach": 14,
     "intestine": 15,
     "abdomen": 16,
+
+    # 骨骼四肢
+    "knee": 17,
+    "ankle": 18,
+    "foot": 19,
+    'finger': 20,
+    "spine": 21,
+    "bone": 22,
+    "joint": 23,
 }
 
 
@@ -517,13 +526,15 @@ class TagKnowledgeBase:
         self,
         knowledge_id: int,
         new_knowledge_text: str = None,
-        new_question_type_ids: List[int] = None,
-        new_modality_ids: List[int] = None,
-        new_organ_ids: List[int] = None,
         source: str = "unknown"
     ) -> bool:
         """
-        修改知识条目
+        修改知识条目（仅修改知识文本，保持原有标签和三元ID不变）
+        
+        Args:
+            knowledge_id: 要修改的知识条目ID
+            new_knowledge_text: 新的知识文本
+            source: 修改来源
         
         Returns:
             bool: 是否成功修改
@@ -531,70 +542,19 @@ class TagKnowledgeBase:
         knowledge_item = self.get_knowledge_by_id(knowledge_id)
         
         if knowledge_item is None:
-            logging.warning(f"Modify failed: Knowledge ID {knowledge_id} not found. Will add as new.")
-            if new_knowledge_text and (new_question_type_ids or new_modality_ids or new_organ_ids):
-                self.add_knowledge(
-                    new_knowledge_text,
-                    new_question_type_ids or [],
-                    new_modality_ids or [],
-                    new_organ_ids or [],
-                    source
-                )
+            logging.warning(f"Modify failed: Knowledge ID {knowledge_id} not found.")
             return False
         
-        # 清除旧索引
-        old_triple_id = knowledge_item.get('triple_id', '')
-        if old_triple_id and knowledge_id in self.triple_index.get(old_triple_id, []):
-            self.triple_index[old_triple_id].remove(knowledge_id)
-            if not self.triple_index[old_triple_id]:
-                del self.triple_index[old_triple_id]
-        
-        for qt_id in knowledge_item.get('question_type_ids', []):
-            if qt_id in self.question_type_index and knowledge_id in self.question_type_index[qt_id]:
-                self.question_type_index[qt_id].remove(knowledge_id)
-        for mod_id in knowledge_item.get('modality_ids', []):
-            if mod_id in self.modality_index and knowledge_id in self.modality_index[mod_id]:
-                self.modality_index[mod_id].remove(knowledge_id)
-        for org_id in knowledge_item.get('organ_ids', []):
-            if org_id in self.organ_index and knowledge_id in self.organ_index[org_id]:
-                self.organ_index[org_id].remove(knowledge_id)
-        
-        # 更新内容
+        # 仅更新知识文本
         if new_knowledge_text:
             knowledge_item['knowledge'] = new_knowledge_text
-        if new_question_type_ids is not None:
-            knowledge_item['question_type_ids'] = sorted(set(new_question_type_ids))
-        if new_modality_ids is not None:
-            knowledge_item['modality_ids'] = sorted(set(new_modality_ids))
-        if new_organ_ids is not None:
-            knowledge_item['organ_ids'] = sorted(set(new_organ_ids))
-        
-        # 重新生成三元ID
-        new_triple_id = make_triple_id(
-            knowledge_item['question_type_ids'],
-            knowledge_item['modality_ids'],
-            knowledge_item['organ_ids']
-        )
-        knowledge_item['triple_id'] = new_triple_id
-        knowledge_item['timestamp'] = get_cur_time()
-        knowledge_item['source'] = source
-        
-        # 更新新索引
-        if knowledge_id not in self.triple_index[new_triple_id]:
-            self.triple_index[new_triple_id].append(knowledge_id)
-        
-        for qt_id in knowledge_item['question_type_ids']:
-            if knowledge_id not in self.question_type_index[qt_id]:
-                self.question_type_index[qt_id].append(knowledge_id)
-        for mod_id in knowledge_item['modality_ids']:
-            if knowledge_id not in self.modality_index[mod_id]:
-                self.modality_index[mod_id].append(knowledge_id)
-        for org_id in knowledge_item['organ_ids']:
-            if knowledge_id not in self.organ_index[org_id]:
-                self.organ_index[org_id].append(knowledge_id)
-        
-        logging.info(f"Modified knowledge ID {knowledge_id}, new triple_id: {new_triple_id}")
-        return True
+            knowledge_item['timestamp'] = get_cur_time()
+            knowledge_item['source'] = source
+            logging.info(f"Modified knowledge ID {knowledge_id}, triple_id unchanged: {knowledge_item.get('triple_id', '')}")
+            return True
+        else:
+            logging.warning(f"Modify failed: No new knowledge text provided for ID {knowledge_id}.")
+            return False
     
     def delete_knowledge(self, knowledge_id: int) -> bool:
         """

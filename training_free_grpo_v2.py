@@ -68,7 +68,8 @@ class LLM():
             'organ_ids': []
         }
         self.current_triple_id_str = ""
-        self.formatted_special_knowledges = "None"
+        self.formatted_special_knowledges = ""
+        self.current_retrieved_knowledge_ids = []
 
         # 加载推理模型
         if self.args.infer_mode != "api":
@@ -178,16 +179,16 @@ class LLM():
         logging.info("[STEP 1] Classification")
         classification_start = time.time()
         
-        (qt_ids, mod_ids, org_ids), classify_tokens = self.classifier.classify(
-            rollouts['question'],
-            rollouts['image']
-        )
+        (qt_ids, mod_ids, org_ids, rollouts['visual_findings']), classify_tokens = self.classifier.classify(question, query_img)
+
         if classify_tokens is not None:
             self.total_tokens_consumed += classify_tokens
-            self.current_sample_tokens += classify_tokens
-            logging.info(f"  Retrieval tokens consumed: {classify_tokens}")
+        rollouts['classification_failed'] = 0
         if qt_ids is None or mod_ids is None or org_ids is None:
+            logging.info(f"  Received invalid classification IDs: QT={qt_ids}, MOD={mod_ids}, ORG={org_ids}")
+            logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
             logging.warning("  Classification failed, skipping knowledge retrieval.")
+            rollouts['retrieved_knowledge_count'] = 0
             rollouts['classification_failed'] = 1
             self.rollouts_per_problem.append(rollouts)
             return rollouts
@@ -206,6 +207,7 @@ class LLM():
         logging.info(f"  Question Types: {qt_names} (IDs: {qt_ids})")
         logging.info(f"  Modalities: {mod_names} (IDs: {mod_ids})")
         logging.info(f"  Organs: {org_names} (IDs: {org_ids})")
+        logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
         logging.info(f"  Classification time: {classification_time:.2f}s")
 
         # 2. 基于三元ID检索知识
@@ -213,7 +215,8 @@ class LLM():
         retrieval_start = time.time()
         
         self.current_retrieved_knowledge = []
-        self.formatted_special_knowledges = "None"
+        self.formatted_special_knowledges = ""
+        self.current_retrieved_knowledge_ids = []
         
         kb_size = len(self.knowledge_base.knowledge_items)
         logging.info(f"  Current KB size: {kb_size} items")
@@ -233,9 +236,10 @@ class LLM():
             logging.info(f"  Retrieved {len(self.current_retrieved_knowledge)} knowledge items:")
             for idx, item in enumerate(self.current_retrieved_knowledge):
                 formatted_items.append(f"[{item['id']}]. {item['knowledge']}")
+                self.current_retrieved_knowledge_ids.append(item['id'])
                 
                 logging.info(f"    [{idx+1}] ID={item['id']}, Triple={item['triple_id']}")
-                logging.info(f"        Knowledge: {item['knowledge']}...")
+                logging.info(f"        Knowledge: {item['knowledge']}")
                 
             self.formatted_special_knowledges = "\n\n".join(formatted_items)
         else:
@@ -244,7 +248,7 @@ class LLM():
         logging.info(f"  Retrieval time: {retrieval_time:.4f}s")
 
         # 构建 chat
-        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges)
+        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges, rollouts['visual_findings'])
         chat = []
         chat.append({"role": "system", "content": query_system_prompt})
         chat.append({
@@ -257,7 +261,6 @@ class LLM():
 
         # 3. 执行 rollouts
         logging.info(f"[STEP 3] Executing {grpo_n} Rollouts")
-        
         for i in range(grpo_n):
             rollout_start = time.time()
             
@@ -269,11 +272,10 @@ class LLM():
                 self.total_tokens_consumed += usage.total_tokens
                 self.current_sample_tokens += usage.total_tokens
             # 解析 XML 标签内容
-            rollouts[f'visual_findings_{i+1}'] = parse_tag(response, "Visual_Findings")
             rollouts[f'knowledge_check_{i+1}'] = parse_tag(response, "Knowledge_Check")
             rollouts[f'reasoning_{i+1}'] = parse_tag(response, "Reasoning")
             rollouts[f'predicted_answer_{i+1}'] = parse_tag(response, "Answer")
-            rollouts[f'trajectory_{i+1}'] = response
+            rollouts[f'trajectory_{i+1}'] = f'<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n'+response
             logging.info(f"  Full Response {i+1}: {response}")
 
             # 使用评估器评估答案
@@ -314,6 +316,11 @@ class LLM():
         summaries = []
         for i in range(self.args.grpo_n):
             summary_start = time.time()
+            if rollouts[f'reward_{i+1}']['result'] == 'correct':
+                logging.info(f"  Trajectory {i+1} is already correct, skipping summary.")
+                summaries.append("No summary needed for correct trajectory.")
+                rollouts[f'trajectory_summary_{i+1}'] = "No summary needed for correct trajectory."
+                continue
             
             problem = rollouts['question']
             trajectory = rollouts[f'trajectory_{i+1}']
@@ -362,8 +369,14 @@ class LLM():
         trajectories_summary_text = ""
         for i in range(self.args.grpo_n):
             eval_result = rollouts[f'reward_{i+1}']
-            trajectories_summary_text += f"\n### Trajectory {i+1} (Answer {eval_result['result']}):\n"
+            if eval_result['result'] == 'correct':
+                logging.info(f"  Trajectory {i+1} is correct, skipping in update konwledge.")
+                trajectories_summary_text += f"\n### Trajectory {i+1}):\n"
+                trajectories_summary_text += f"Trajectory {i+1} is correct, skipping in update konwledge.\n\n"
+                continue
+            trajectories_summary_text += f"\n### Trajectory {i+1}):\n"
             trajectories_summary_text += f"{rollouts[f'trajectory_summary_{i+1}']}\n"
+            trajectories_summary_text += f"Evaluation Result: The model answers {eval_result['result']} - {eval_result['reason']}\n\n"
         # 2. 构建更新 prompt
         prompt = controller_prompt(
             rollouts['question'],
@@ -371,6 +384,7 @@ class LLM():
             rollouts['answer'],
             self.formatted_special_knowledges
         )
+        logging.info(f"  Update Prompt: {prompt}")
 
         chat = []
         chat.append({"role": "system", "content": controller_system_prompt})
@@ -388,11 +402,11 @@ class LLM():
                 self.total_tokens_consumed += usage.total_tokens
                 self.current_sample_tokens += usage.total_tokens
         
-        logging.info(f"  LLM Update Response: {response}...")
+        logging.info(f"  LLM Update Response: {response}")
 
         # 3. 解析并执行知识更新
         kb_size_before = len(self.knowledge_base.knowledge_items)
-        self._process_knowledge_updates(response, rollouts)
+        self._process_knowledge_updates(response, rollouts, current_knowledge_ids=self.current_retrieved_knowledge_ids)
         kb_size_after = len(self.knowledge_base.knowledge_items)
         
         update_time = time.time() - update_start
@@ -404,7 +418,7 @@ class LLM():
 
         return response
 
-    def _process_knowledge_updates(self, response: str, rollouts: Dict):
+    def _process_knowledge_updates(self, response: str, rollouts: Dict, current_knowledge_ids: List[int]):
         """解析 LLM 的知识更新指令并执行"""
         try:
             # 提取 JSON
@@ -442,24 +456,31 @@ class LLM():
                             source=self.args.model_name_or_path
                         )
                         logging.info(f"    [{idx+1}] ADD: ID={new_id}, Triple={self.current_triple_id_str}")
-                        logging.info(f"         Content: {knowledge_text}...")
+                        logging.info(f"         Content: {knowledge_text}")
                 
                 elif action == 'modify':
-                    knowledge_id = self._parse_id(update.get('modified_from'))
+                    knowledge_id = self._parse_id(update.get('modified_id'))
                     knowledge_text = update.get('knowledge', '')
                     
-                    if knowledge_id is not None:
+                    if knowledge_id is not None and knowledge_id in current_knowledge_ids:
                         success = self.knowledge_base.modify_knowledge(
                             knowledge_id=knowledge_id,
                             new_knowledge_text=knowledge_text,
-                            new_question_type_ids=self.current_triple_ids['question_type_ids'],
-                            new_modality_ids=self.current_triple_ids['modality_ids'],
-                            new_organ_ids=self.current_triple_ids['organ_ids'],
                             source=self.args.model_name_or_path
                         )
                         logging.info(f"    [{idx+1}] MODIFY: ID={knowledge_id}, Success={success}")
-                        logging.info(f"         New content: {knowledge_text}...")
-                
+                        logging.info(f"         New content: {knowledge_text}")
+                    else:
+                        # 作Add处理
+                        new_id = self.knowledge_base.add_knowledge(
+                            knowledge_text=knowledge_text,
+                            question_type_ids=self.current_triple_ids['question_type_ids'],
+                            modality_ids=self.current_triple_ids['modality_ids'],
+                            organ_ids=self.current_triple_ids['organ_ids'],
+                            source=self.args.model_name_or_path
+                        )
+                        logging.info(f"    [{idx+1}] MODIFY treated as ADD: ID={new_id}, Triple={self.current_triple_id_str}")
+                        logging.info(f"         Content: {knowledge_text}")
                 elif action == 'delete':
                     knowledge_id = self._parse_id(update.get('delete_id'))
                     if knowledge_id is not None:
@@ -495,6 +516,8 @@ def main(args):
         from utils.datasets import get_slake as process_dataset
     elif args.exp_name == "vqa-rad":
         from utils.datasets import get_vqarad as process_dataset
+    elif args.exp_name == "omni-rad-closed":
+        from utils.datasets import get_omni_rad_closed as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
@@ -550,7 +573,6 @@ def main(args):
                 if rollouts.get('classification_failed', 0) == 1:
                     logging.info("Skipping summarize and update due to classification failure.")
                     continue
-
                 summaries = Agent.summarize_process(rollouts)
                 update_response = Agent.update_knowledge(rollouts)
 
@@ -681,7 +703,7 @@ if __name__ == "__main__":
     parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
 
     parser.add_argument("--data_split", type=str, default="train")
-    parser.add_argument("--exp_name", "--en", type=str, default="slake", choices=["vqa-rad", "slake"])
+    parser.add_argument("--exp_name", "--en", type=str, default="slake")
     parser.add_argument("--dataset_truncate", "--dt", type=int, default=300)
     parser.add_argument("--answer_type", "--at", type=str, default="closed", choices=["closed", "open"])
     parser.add_argument("--content_type", "--ct", type=str, default="all") #choices=["all", "Modality", "Organ", "Abnormality"...]

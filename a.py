@@ -123,5 +123,5 @@ print(b)
 
 
 
-# python training_free_grpo_v2.py --en slake --at closed --ct all --model qwen2.5-vl-instruct --em qwen2.5-vl-instruct --cm qwen2.5-vl-instruct --bu https://genaiapi.shanghaitech.edu.cn/api/v1/start --ak skd --dt 1000
-# python test.py --en slake --at closed --dt 300 --ct all --model qwen2.5-vl-instruct --em qwen2.5-vl-instruct --cm qwen2.5-vl-instruct --bu https://genaiapi.shanghaitech.edu.cn/api/v1/start --ak skd --gk true
+# python training_free_grpo_v2.py --en omni-rad-closed --at closed --ct all --model qwen2.5-vl-instruct --em qwen2.5-vl-instruct --cm qwen2.5-vl-instruct --bu https://genaiapi.shanghaitech.edu.cn/api/v1/start --ak skd --dt 1000
+# python test.py --en slake --at closed --dt 500 --ct all --model qwen2.5-vl-instruct --em qwen2.5-vl-instruct --cm qwen2.5-vl-instruct --bu https://genaiapi.shanghaitech.edu.cn/api/v1/start --ak skd --gk true

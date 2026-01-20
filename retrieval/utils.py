@@ -16,26 +16,31 @@ from utils.utils import inference_chat_api
 
 # ==================== 分类 Prompt ====================
 
-CLASSIFICATION_SYSTEM_PROMPT = """You are a medical image analysis expert. Classify each (question, image) pair.
+CLASSIFICATION_SYSTEM_PROMPT = """You are a medical image analysis expert. Your task is to:
+1. First, provide detailed visual findings from the image.
+2. Then, classify each (question, image) pair with appropriate tags.
 
-Decision priority:
-- question_types and organs: decide mainly from the QUESTION TEXT; use the image only to confirm/refine if the text is ambiguous.
-- modality: decide mainly from the IMAGE; use the question only if the image is unclear.
-If text and image conflict: modality follows the image; question_types/organs follow the question.
+**Decision Priority:**
+- question_types and organs: Decide mainly from the QUESTION TEXT; use the image only to confirm/refine if the text is ambiguous.
+- modality: Decide mainly from the IMAGE; use the question only if the image is unclear.
+- If text and image conflict: modality follows the image; question_types/organs follow the question.
 
+**Output Format:**
 Output ONLY this valid JSON (no extra text). Use only predefined tags; do not invent tags:
 {
+  "visual_findings": "Detailed description of observable features in the image.",
   "question_types": ["tag1", "tag2", ...],
   "modality": "single_tag",
   "organs": ["tag1", "tag2", ...]
 }
 
-Rules:
-1. question_types: Select 1-2 most relevant tags based primarily on the medical question.
-2. modality: Select exactly 1 tag describing the image modality, if an image is involved.
-3. organs: Select 1–5 most relevant organ or tissue tags referenced or implied in the question.
-4. Use ONLY tags from the provided lists.
-5. Output ONLY the JSON object. Do not include explanations or additional text.
+**Rules:**
+1. visual_findings: Detailed description of observable features in the image (e.g., density, shape, location, texture, borders). If a feature is ambiguous, describe its visual properties (e.g., 'linear density') rather than naming a disease. Mention 2-3 differential possibilities if unsure. DO NOT make any diagnosis here, only describe what you see.
+2. question_types: Select 1-2 most relevant tags based primarily on the medical question.
+3. modality: Select exactly 1 tag describing the image modality.
+4. organs: Select 1-5 most relevant organ or tissue tags referenced or implied in the question.
+5. Use ONLY tags from the provided lists.
+6. Output ONLY the JSON object. Do not include explanations or additional text.
 """
 
 
@@ -70,39 +75,63 @@ def get_classification_prompt(
 
 
 # ==================== 答案评估 Prompt ====================
-EVALUATION_SYSTEM_PROMPT = """You are a Medical Logic Auditor. You will review a diagnostic process performed by a VLM.
-You do NOT see the image. You only see the Text Question, the Ground Truth (GT), and the VLM's output.
+EVALUATION_SYSTEM_PROMPT = """You are a Medical Logic Auditor. Your task is to evaluate the diagnostic reasoning of a Vision-Language Model (VLM).
 
-**Your Goal:** Determine the root cause of the error (if any) and classify the result.
+**Context:**
+- You have access to: the Question, the Ground Truth (GT) answer, and the VLM's complete response (including <Visual_Findings>, <Knowledge_Check>, <Reasoning>, and <Answer>)
 
-**Logic for Evaluation:**
-1. **Compare `<Visual_Findings>` with `Ground Truth`:**
-   - If the VLM describes features that fundamentally contradict the GT (e.g., VLM says "clear lungs" but GT is "Pneumonia"), this is a **VISUAL_PERCEPTION_ERROR**.
-   - If the VLM describes features consistent with GT (e.g., VLM says "opacity present") but concludes the wrong disease, this is a **REASONING_ERROR**.
+**Evaluation Logic:**
 
-2. **Assess Knowledge Usage:**
-   - Did the VLM misuse the provided knowledge? Or was the knowledge missing?
+**Step 1: Answer Correctness Assessment**
+Compare the VLM's response with the Ground Truth:
+- **CORRECT**: As long as the answer is semantically equivalent to GT (same meaning)
+- **WRONG**: The answer differs from GT in any way (missing information, extra information, or incorrect information)
+- This step is very important and will affect the accuracy statistics of the final experiment. Please strictly judge whether the answer output by VLM is semantically equivalent to GT.
 
-3. **Semantic Consistency:**
-   - The VLM's answer must be semantically consistent with the GT to be considered correct.
-   - If the VLM's answer includes more information than GT or less information than GT, it is considered wrong.
-   - Only when the semantic meaning fully matches GT, it is correct.
+**Step 2: Error Type Classification (Only if WRONG)**
+If the answer is wrong, identify the root cause:
+
+1. **visual_perception_error**: 
+   - The VLM's <Visual_Findings> fundamentally contradict the GT
+   - Example: VLM describes "clear lungs" but GT indicates "pneumonia with consolidation"
+   - The error originates from incorrect visual interpretation
+
+2. **reasoning_logic_error**:
+   - The VLM's <Visual_Findings> align with GT (correct observations)
+   - But the <Reasoning> process leads to wrong conclusion
+   - Example: Correctly identifies "pulmonary opacity" but misdiagnoses as "tuberculosis" instead of "pneumonia"
+   - The error originates from flawed logical inference
+
+3. **knowledge_deficiency**:
+   - The VLM lacks necessary medical knowledge to interpret findings
+   - Or misapplies/misunderstands the provided knowledge
+   - Example: Doesn't know that "ground-glass opacity + fever = likely COVID-19"
 
 **Output Format:**
-Please output a JSON object:
+Return ONLY a valid JSON object (no additional text):
 {
   "status": "correct" | "wrong",
   "error_type": "none" | "visual_perception_error" | "reasoning_logic_error" | "knowledge_deficiency",
-  "critique": "Brief explanation of why the VLM failed/succeeded based on the logic above."
+  "critique": "Concise explanation (1-2 sentences) of why the VLM succeeded or failed, referencing specific parts of the VLM's output."
 }
+
+**Important Rules:**
+- If status is "correct", error_type must be "none"
+- If status is "wrong", error_type must be one of the three error types
+- Focus your critique on the most critical failure point
+- Be objective and evidence-based in your assessment
 """
+
 
 
 def get_evaluation_prompt(question: str, response: str, ground_truth: str) -> str:
     """生成答案评估 prompt"""
-    prompt = f"""**Question:** {question}
-**Ground Truth:** {ground_truth}
-**VLM Output:**{response}
+    prompt = f"""**Question:**
+{question}
+**Ground Truth:**
+{ground_truth}
+**VLM Response:**
+{response}
 """
     return prompt
 
@@ -185,6 +214,7 @@ class RerietrievalClassifier:
             question_types = result.get('question_types', [])
             modality = result.get('modality', '')
             organs = result.get('organs', [])
+            visual_findings = result.get('visual_findings', '')
             
             # 确保 modality 是列表
             if isinstance(modality, str):
@@ -205,13 +235,13 @@ class RerietrievalClassifier:
             if not org_ids:
                 org_ids = None
             
-            return qt_ids, mod_ids, org_ids
+            return qt_ids, mod_ids, org_ids, visual_findings
 
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             logging.warning(f"Failed to parse classification response: {e}")
             logging.warning(f"Response: {response}")
             # 返回默认值
-            return None, None, None
+            return None, None, None, None
 
     def get_tag_names(
         self, 
@@ -319,12 +349,17 @@ def create_evaluator_inference_func(global_args=None):
     """
     class EvalArgs:
         def __init__(self):
-            self.model_name_or_path = global_args.evaluator_model
-            self.rollout_temperature = 0.3
-            self.rollout_max_tokens = 1024
-            self.rollout_top_p = 0.95
+            self.model_name_or_path = global_args.classifier_model
+            # 将温度设为0以消除随机性，使输出尽可能固定
+            self.rollout_temperature = 0.0
+            self.rollout_max_tokens = 2048
+            self.rollout_repetition_penalty=1.0
+            # 设置较小的 top_p 也有助于减少随机性
+            self.rollout_top_p = 0.01
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
+            # 如果API支持seed，可以固定它
+            self.seed = 42 
     
     args = EvalArgs()
     
@@ -343,12 +378,18 @@ def create_classifier_inference_func(global_args=None):
     class ClassifyArgs:
         def __init__(self):
             self.model_name_or_path = global_args.classifier_model
-            self.rollout_temperature = 0.3
-            self.rollout_max_tokens = 1024
-            self.rollout_top_p = 0.95
+            # 将温度设为0以消除随机性，使输出尽可能固定
+            self.rollout_temperature = 0.0
+            self.rollout_max_tokens = 2048
+            self.rollout_repetition_penalty=1.0
+            # 设置较小的 top_p 也有助于减少随机性
+            self.rollout_top_p = 0.01
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
+            # 如果API支持seed，可以固定它
+            self.seed = 42 
     
+
     args = ClassifyArgs()
     
     def inference_func(chat):

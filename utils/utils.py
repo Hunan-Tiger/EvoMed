@@ -198,7 +198,8 @@ def inference_chat_api(messages, args, max_retries=5):
                 top_p=args.rollout_top_p,
                 # 将不支持的标准参数移入 extra_body
                 extra_body={
-                    "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0)
+                    "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
+                    "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
                 },
                 timeout=120.0
             )

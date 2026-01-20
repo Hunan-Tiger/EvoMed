@@ -74,7 +74,7 @@ class LLM():
             'organ_ids': []
         }
         self.current_triple_id_str = ""
-        self.formatted_special_knowledges = "None"
+        self.formatted_special_knowledges = ""
         self.total_tokens_consumed = 0
         
         # 4. 加载推理模型 (仅在 local 模式下)
@@ -99,14 +99,13 @@ class LLM():
                 logging.info(f"  Unique Triple IDs: {stats['unique_triple_ids']}")
             else:
                 logging.warning(f"Knowledge base not found at: {self.kb_path}")
-            
-            # 初始化分类器
-            classifier_inference_func = create_classifier_inference_func(self.args)
-            self.classifier = RerietrievalClassifier(classifier_inference_func, self.args)
-            logging.info(f"Rerietrieval Classifier initialized with model: {self.args.classifier_model}")
         else:
             logging.info("Knowledge retrieval disabled (give_knowledges=false).")
         
+        # 初始化分类器
+        classifier_inference_func = create_classifier_inference_func(self.args)
+        self.classifier = RerietrievalClassifier(classifier_inference_func, self.args)
+        logging.info(f"Rerietrieval Classifier initialized with model: {self.args.classifier_model}")
         # 初始化答案评估器
         eval_inference_func = create_evaluator_inference_func(self.args)
         self.evaluator = AnswerEvaluator(eval_inference_func)
@@ -176,23 +175,24 @@ class LLM():
         
         # 重置知识检索状态
         self.current_retrieved_knowledge = []
-        self.formatted_special_knowledges = "None"
+        self.formatted_special_knowledges = ""
         self.current_triple_id_str = ""
         
+        # 1. 使用 VLM 进行分类，获取三元ID
+        logging.info("[STEP 1] Classification")
+        classification_start = time.time()
+        (qt_ids, mod_ids, org_ids, rollouts['visual_findings']), classify_tokens = self.classifier.classify(question, query_img)
         # 仅在 give_knowledges=true 时进行知识检索
         if self.args.give_knowledges.lower() == "true":
             if (self.knowledge_base is not None 
                 and len(self.knowledge_base.knowledge_items) > 0
                 and self.classifier is not None):
                 
-                # 1. 使用 VLM 进行分类，获取三元ID
-                logging.info("[STEP 1] Classification")
-                classification_start = time.time()
-                
-                (qt_ids, mod_ids, org_ids), classify_tokens = self.classifier.classify(question, query_img)
                 if classify_tokens is not None:
                     self.total_tokens_consumed += classify_tokens
                 if qt_ids is None or mod_ids is None or org_ids is None:
+                    logging.info(f"  Received invalid classification IDs: QT={qt_ids}, MOD={mod_ids}, ORG={org_ids}")
+                    logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
                     logging.warning("  Classification failed, skipping knowledge retrieval.")
                     rollouts['retrieved_knowledge_count'] = 0
                     self.rollouts_per_problem.append(rollouts)
@@ -214,6 +214,7 @@ class LLM():
                     logging.info(f"  Question Types: {qt_names} (IDs: {qt_ids})")
                     logging.info(f"  Modalities: {mod_names} (IDs: {mod_ids})")
                     logging.info(f"  Organs: {org_names} (IDs: {org_ids})")
+                    logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
                     logging.info(f"  Classification time: {classification_time:.2f}s")
                     
                     rollouts['triple_id'] = self.current_triple_id_str
@@ -253,11 +254,12 @@ class LLM():
                 rollouts['retrieved_knowledge_count'] = 0
         else:
             # give_knowledges=false，跳过知识检索
+            logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
             logging.info("  Knowledge retrieval skipped (give_knowledges=false).")
             rollouts['retrieved_knowledge_count'] = 0
 
        # 构建 chat
-        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges)
+        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges, rollouts['visual_findings'])
         chat = []
         chat.append({"role": "system", "content": query_system_prompt})
         chat.append({
@@ -280,13 +282,12 @@ class LLM():
         if usage and hasattr(usage, 'total_tokens') and usage.total_tokens is not None:
             self.total_tokens_consumed += usage.total_tokens
 
-        rollouts[f'trajectory'] = response
         # 解析 XML 标签内容
-        rollouts[f'visual_findings'] = parse_tag(response, "Visual_Findings")
-        rollouts[f'knowledge_check'] = parse_tag(response, "Knowledge_Check")
-        rollouts[f'reasoning'] = parse_tag(response, "Reasoning")
-        rollouts[f'predicted_answer'] = parse_tag(response, "Answer")
-        rollouts[f'trajectory'] = response
+        # rollouts['visual_findings'] = parse_tag(response, "Visual_Findings")
+        rollouts['knowledge_check'] = parse_tag(response, "Knowledge_Check")
+        rollouts['reasoning'] = parse_tag(response, "Reasoning")
+        rollouts['predicted_answer'] = parse_tag(response, "Answer")
+        rollouts['trajectory'] = response
         logging.info(f"  Full Response: {response}")
 
         # 使用评估器评估答案
@@ -345,6 +346,7 @@ def main(args):
     logging.info(f"Knowledge Base Path: {args.kb_path if args.give_knowledges.lower() == 'true' else 'N/A'}")
     logging.info(f"GRPO N: {args.grpo_n}")
     logging.info(f"Temperature: {args.rollout_temperature}")
+    logging.info(f"Repetition Penalty: {args.rollout_repetition_penalty}")
     logging.info(f"Evaluator Model: {args.evaluator_model}")
     logging.info("=" * 80 + "\n")
     
@@ -370,7 +372,7 @@ def main(args):
         if args.answer_type != 'open':
             total_correct = sum(1 for m in all_metrics if m == 'correct')
             total_wrong = sum(1 for m in all_metrics if m == 'wrong')
-            logging.info(f"  Loaded stats - Correct: {total_correct}, Wrong: {total_wrong}, ACC: {total_correct/(total_correct+total_wrong)*100:.2f}%")
+            logging.info(f"  Loaded stats - Correct: {total_correct}, Wrong: {total_wrong}, ACC: {total_correct/(total_correct+total_wrong+0.00001)*100:.2f}%")
         else:
             avg_recall = sum(all_metrics) / len(all_metrics) if all_metrics else 0
             logging.info(f"  Loaded stats - Average Recall: {avg_recall:.4%} over {len(all_metrics)} samples")
@@ -403,20 +405,16 @@ def main(args):
                 gt = rollouts['answer']
                 recall_score = calculate_word_recall(gt, pred)
                 all_metrics.append(recall_score)
+                # 开放式回答，设定召回率低于0.6为失败
+                if recall_score < 0.6:
+                    failed_indices.append(idx)
             else:
                 if reward == 'correct':
                     all_metrics.append('correct')
                 else:
+                    failed_indices.append(idx)
                     all_metrics.append('wrong')
-
-            # 判断预测是否正确（用于failed_indices）
-            if args.answer_type != 'open':
-                if reward != 'correct':
-                    failed_indices.append(idx)
-            else:
-                # 开放式回答，设定召回率低于0.6为失败
-                if all_metrics[-1] < 0.6:
-                    failed_indices.append(idx)
+            
             
             sample_time = time.time() - sample_start_time
             
@@ -424,6 +422,7 @@ def main(args):
             logging.info(f"  Sample time: {sample_time:.2f}s")
             logging.info(f"  Current Sample Metrics: {all_metrics[-1]}")
             logging.info(f"  Progress: {idx+1}/{len(data)} ({(idx+1)/len(data)*100:.1f}%)")
+            logging.info(f"  Failed Samples So Far: {[i+1 for i in failed_indices]}")
             
             # 计算累计准确率
             if args.answer_type != 'open':
@@ -464,7 +463,7 @@ def main(args):
         logging.info("-" * 40)
         logging.info(f"  Correct: {total_correct}")
         logging.info(f"  Wrong: {total_wrong}")
-        acc = total_correct / total_samples * 100
+        acc = total_correct / (total_correct+total_wrong) * 100
         logging.info(f"  Accuracy: {acc:.2f}%")
     else:
         logging.info("RECALL METRICS")
@@ -485,7 +484,7 @@ def main(args):
         eval_={
             'correct': total_correct,
             'wrong': total_wrong,
-            'accuracy': total_correct / total_samples * 100 if total_samples > 0 else 0,
+            'accuracy': total_correct / (total_correct+total_wrong+0.00001) * 100
         }
     else:
         eval_={
@@ -557,14 +556,13 @@ if __name__ == "__main__":
     parser.add_argument("--kb_path", "--kb", type=str, default="knowledges/slake_tag_kb.pkl", help="Path to tag knowledge base")
 
     parser.add_argument("--grpo_n", type=int, default=1, help="Number of rollouts per sample")
-    parser.add_argument("--rollout_top_p", type=float, default=1.0, help="Top-p sampling")
-    parser.add_argument("--rollout_top_k", type=int, default=0, help="Top-k sampling")
-    parser.add_argument("--rollout_repetition_penalty", type=float, default=1.0, help="Repetition penalty")
-    parser.add_argument("--rollout_temperature", type=float, default=0.3, help="Temperature")
+    parser.add_argument("--rollout_top_p", type=float, default=0.01, help="Top-p sampling")
+    parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.1, help="Repetition penalty")
+    parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=6, help="No repeat ngram size")
+    parser.add_argument("--rollout_temperature", '--temp', type=float, default=0.0, help="Temperature")
     parser.add_argument("--rollout_max_tokens", type=int, default=5120, help="Max tokens")
     
     parser.add_argument("--give_knowledges", "--gk", type=str, default="true", help="Whether to provide knowledge")
-
     
     parser.add_argument("--start_idx", "--si", type=int, default=0, help="Starting index")
     parser.add_argument("--save_interval", type=int, default=5, help="Save checkpoint interval")
