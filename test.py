@@ -28,7 +28,7 @@ from retrieval.knowledge_base import (
     ID_TO_MODALITY, 
     ID_TO_ORGAN
 )
-
+from retrieval.Reranker import MedicalVisualHyDE
 
 
 class LLM():
@@ -76,6 +76,8 @@ class LLM():
         self.current_triple_id_str = ""
         self.formatted_special_knowledges = ""
         self.total_tokens_consumed = 0
+
+        self.reranker = MedicalVisualHyDE(device='cuda')
         
         # 4. 加载推理模型 (仅在 local 模式下)
         if self.args.infer_mode != "api":
@@ -235,6 +237,14 @@ class LLM():
                     retrieval_time = time.time() - retrieval_start
                     
                     # 格式化知识
+                    candicate_knowledges = [item['knowledge'] for item in self.current_retrieved_knowledge]
+                    self.current_retrieved_knowledge = self.reranker.rerank(
+                        question,
+                        rollouts['visual_findings'],
+                        candicate_knowledges,
+                        threshold=self.args.reranker_threshold,
+                        top_k=self.args.top_k_knowledges
+                    )
                     if self.current_retrieved_knowledge:
                         formatted_items = []
                         logging.info(f"  Retrieved {len(self.current_retrieved_knowledge)} knowledge items:")
@@ -561,6 +571,9 @@ if __name__ == "__main__":
     parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=6, help="No repeat ngram size")
     parser.add_argument("--rollout_temperature", '--temp', type=float, default=0.0, help="Temperature")
     parser.add_argument("--rollout_max_tokens", type=int, default=5120, help="Max tokens")
+
+    parser.add_argument("--reranker_threshold", type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
     
     parser.add_argument("--give_knowledges", "--gk", type=str, default="true", help="Whether to provide knowledge")
     

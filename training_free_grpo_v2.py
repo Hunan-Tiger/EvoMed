@@ -12,7 +12,7 @@ import sys
 import pickle
 from retrieval.knowledge_base import TagKnowledgeBase, make_triple_id
 from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_evaluator_inference_func,create_classifier_inference_func
-
+from retrieval.Reranker import MedicalVisualHyDE
 
 
 class LLM(): 
@@ -70,6 +70,8 @@ class LLM():
         self.current_triple_id_str = ""
         self.formatted_special_knowledges = ""
         self.current_retrieved_knowledge_ids = []
+
+        self.reranker = MedicalVisualHyDE(device='cuda')
 
         # 加载推理模型
         if self.args.infer_mode != "api":
@@ -231,6 +233,14 @@ class LLM():
         retrieval_time = time.time() - retrieval_start
         
         # 格式化知识
+        candicate_knowledges = [item['knowledge'] for item in self.current_retrieved_knowledge]
+        self.current_retrieved_knowledge = self.reranker.rerank(
+            question,
+            rollouts['visual_findings'],
+            candicate_knowledges,
+            threshold=self.args.reranker_threshold,
+            top_k=self.args.top_k_knowledges
+        )
         if self.current_retrieved_knowledge:
             formatted_items = []
             logging.info(f"  Retrieved {len(self.current_retrieved_knowledge)} knowledge items:")
@@ -708,12 +718,15 @@ if __name__ == "__main__":
     parser.add_argument("--answer_type", "--at", type=str, default="closed", choices=["closed", "open"])
     parser.add_argument("--content_type", "--ct", type=str, default="all") #choices=["all", "Modality", "Organ", "Abnormality"...]
 
-    parser.add_argument("--kb_save_steps", type=int, default=50, help="Save KB version every N steps (0 to disable)")
+    parser.add_argument("--kb_save_steps", type=int, default=100, help="Save KB version every N steps (0 to disable)")
     parser.add_argument("--epochs", "--e", type=int, default=1)
     parser.add_argument("--grpo_n", type=int, default=3)
     parser.add_argument("--rollout_top_p", type=float, default=0.95)
     parser.add_argument("--rollout_temperature", type=float, default=0.7)
     parser.add_argument("--rollout_max_tokens", type=int, default=5120)
+
+    parser.add_argument("--reranker_threshold", type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
 
     args = parser.parse_args()
     main(args)

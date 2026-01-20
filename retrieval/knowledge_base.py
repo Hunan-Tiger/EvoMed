@@ -91,15 +91,16 @@ ORGAN_TISSUE_TAGS = {
     "stomach": 14,
     "intestine": 15,
     "abdomen": 16,
+    'hip': 17,
 
     # 骨骼四肢
-    "knee": 17,
-    "ankle": 18,
-    "foot": 19,
-    'finger': 20,
-    "spine": 21,
-    "bone": 22,
-    "joint": 23,
+    "knee": 18,
+    "ankle": 19,
+    "foot": 20,
+    'finger': 21,
+    "spine": 22,
+    "bone": 23,
+    "joint": 24,
 }
 
 

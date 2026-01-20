@@ -19,6 +19,7 @@ You MUST structure your response strictly using the following XML tags:
 Use the knowledge as a reference, but prioritize the visual evidence in the medical image.
 '''
 
+
 def query_prompt(problem, knowledges, visual_findings):
     if knowledges.lower() == '':
         return rf"""No Relevant Medical Knowledge.
