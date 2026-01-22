@@ -7,172 +7,172 @@ from PIL import Image
 from utils.rewards import extract_hash_answer
 
 
-# GRPO training
-def get_gsm8k_questions(split = "train", grpo = True) -> Dataset:
-    GRPO_SYSTEM_PROMPT = r"""
-1. Output the thinking process in <thinking> </thinking> and final answer in <answer> </answer> tags.
-2. The output format should be as follows:
-<thinking>
-...
-</thinking>
-<answer>
-...
-</answer>
-3. No extra information or text outside of these tags.
-"""
+# # GRPO training
+# def get_gsm8k_questions(split = "train", grpo = True) -> Dataset:
+#     GRPO_SYSTEM_PROMPT = r"""
+# 1. Output the thinking process in <thinking> </thinking> and final answer in <answer> </answer> tags.
+# 2. The output format should be as follows:
+# <thinking>
+# ...
+# </thinking>
+# <answer>
+# ...
+# </answer>
+# 3. No extra information or text outside of these tags.
+# """
 
-    SFT_SYSTEM_PROMPT = r"""
-1. Output the final answer in <answer> </answer> tag, no extra information or text outside of the tag.
-2. The output format should be as follows:
-<answer>
-...
-</answer>
-"""
+#     SFT_SYSTEM_PROMPT = r"""
+# 1. Output the final answer in <answer> </answer> tag, no extra information or text outside of the tag.
+# 2. The output format should be as follows:
+# <answer>
+# ...
+# </answer>
+# """
 
-    data = load_dataset('/public_bme2/bme-wangqian2/lijm2024/VLM/checkpoints/datasets/openai/gsm8k', 'main')[split] # type: ignore
-    print(data[0])
-    dataset = []
-    for i, item in enumerate(data):
-        question = item["question"]
-        answer = extract_hash_answer(item["answer"])
-        dataset.append({
-            'prompt': [
-                {'role': 'system', 'content': [{'type': 'text', 'text': GRPO_SYSTEM_PROMPT if grpo else SFT_SYSTEM_PROMPT}]},
-                {'role': 'user', 'content': [{'type': 'text', 'text': question}]},
-            ],
-            'image': None,
-            'answer': answer
-        })
-    return dataset 
-
-
-
-def get_llava_med_zh_instruct_60k(split = 'train[0:2000]'):
-    SYSTEM_PROMPT = r'''
-# Below is an instruction that describes a task, paired with an input that provides further context.
-# Write a response that appropriately completes the request.
-# Before answering, think carefully about the question and create a step-by-step chain of 
-# thoughts to ensure a logical and accurate response.
-
-### Instruction:
-The user asks a question about medicine, and you solve it. 
-You first think about the thinking process in the mind and then provide the user with the answer.
-Output the thinking process in <thinking> </thinking> and final answer in <answer> </answer> tags.
-The output format should be as follows:
-<thinking>
-...
-</thinking>
-<answer>
-...
-</answer>
-'''   # for a different language, please change the last few words.
-
-    data = load_dataset('checkpoints/datasets/BUAADreamer/llava-med-zh-instruct-60k', split=split, trust_remote_code=True) # type: ignore
-    print(data[0])
-    dataset = []
-    for i, item in enumerate(data):
-        dialogue_num = len(item['messages'])
-        n = 0
-        while n<dialogue_num:
-            assert item['messages'][n]['role']=='user' and item['messages'][n+1]['role']=='assistant'
-            question_sample = item['messages'][n]['content']
-            answer_sample = item['messages'][n+1]['content']
-            img_pil = item['images'][0].resize((128,128))  # reduce vRAM burden
-            dataset.append({
-                    'prompt': [
-                        {'role': 'system', 'content': [{"type": "text", "text": SYSTEM_PROMPT}]},
-                        {'role': 'user', 'content': [
-                            {"type": "image", },  
-                            {"type": "text", "text": question_sample},    
-                        ]}
-                    ],
-                    'image':img_pil,
-                    'answer':answer_sample,
-                })
-            n+=2
-    return dataset
-
-def get_medo1(split='train'):
-    instruction = r'''Your task:
-1. Output the reasoning process in <think>...</think> and final answer in <answer>...</answer> tags.
-2. The output format should be as follows:
-<think>
-...
-</think>
-<answer>
-...
-</answer>
-3. No extra information or text outside of these tags.
-'''
-
-    data = load_dataset('checkpoints/datasets/FreedomIntelligence/medical-o1-reasoning-SFT', 'en')[f'{split}']
-    print(data[0])
-
-    dataset = []
-    for i, item in enumerate(data):
-        conversation = [
-        { "role": 'system',
-          "content": [
-             {'type': 'text','text': instruction}
-         ]
-        },
-        { "role": "user",
-          "content" : [
-            {"type" : "text",  "text": item['Question']},
-            {"type" : "image"}]
-        },
-        { "role" : "assistant",
-          "content" : [
-            {"type" : "text",  "text": '<think>\n'+ item['Complex_CoT'] + '\n</think>\n'},
-            {"type" : "text",  "text": '<answer>\n'+ item['Response'] + '\n</answer>\n'}
-            ]
-        },
-    ]
-        dataset.append(conversation)
-    return dataset
+#     data = load_dataset('/public_bme2/bme-wangqian2/lijm2024/VLM/checkpoints/datasets/openai/gsm8k', 'main')[split] # type: ignore
+#     print(data[0])
+#     dataset = []
+#     for i, item in enumerate(data):
+#         question = item["question"]
+#         answer = extract_hash_answer(item["answer"])
+#         dataset.append({
+#             'prompt': [
+#                 {'role': 'system', 'content': [{'type': 'text', 'text': GRPO_SYSTEM_PROMPT if grpo else SFT_SYSTEM_PROMPT}]},
+#                 {'role': 'user', 'content': [{'type': 'text', 'text': question}]},
+#             ],
+#             'image': None,
+#             'answer': answer
+#         })
+#     return dataset 
 
 
 
-def get_medminist(root_path='datasets/MedMNIST', split='train', length=-1, special=None, data_limit=1000, thinktype='nothink'):
-    PROMPT_THINK = r'''Your task:
-    1. Think through the question step by step in no more than 3 sentences, enclose your reasoning process in <think>...</think> tags.
-    2. Then answer the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags.'''
+# def get_llava_med_zh_instruct_60k(split = 'train[0:2000]'):
+#     SYSTEM_PROMPT = r'''
+# # Below is an instruction that describes a task, paired with an input that provides further context.
+# # Write a response that appropriately completes the request.
+# # Before answering, think carefully about the question and create a step-by-step chain of 
+# # thoughts to ensure a logical and accurate response.
 
-    PROMPT_NOTHINK = r'''
-    Answer directly with the option's letter from the given choices (A, B, C, D,...)'''
+# ### Instruction:
+# The user asks a question about medicine, and you solve it. 
+# You first think about the thinking process in the mind and then provide the user with the answer.
+# Output the thinking process in <thinking> </thinking> and final answer in <answer> </answer> tags.
+# The output format should be as follows:
+# <thinking>
+# ...
+# </thinking>
+# <answer>
+# ...
+# </answer>
+# '''   # for a different language, please change the last few words.
 
-    dataset = []
-    data_folder = os.path.join(root_path, split)
-    if special is None:
-        data_paths = [os.path.join(data_folder, file) for file in os.listdir(data_folder) if os.path.isfile(os.path.join(data_folder, file))]
-    else:
-        data_paths = [os.path.join(data_folder, f"{special}.npy")]
+#     data = load_dataset('checkpoints/datasets/BUAADreamer/llava-med-zh-instruct-60k', split=split, trust_remote_code=True) # type: ignore
+#     print(data[0])
+#     dataset = []
+#     for i, item in enumerate(data):
+#         dialogue_num = len(item['messages'])
+#         n = 0
+#         while n<dialogue_num:
+#             assert item['messages'][n]['role']=='user' and item['messages'][n+1]['role']=='assistant'
+#             question_sample = item['messages'][n]['content']
+#             answer_sample = item['messages'][n+1]['content']
+#             img_pil = item['images'][0].resize((128,128))  # reduce vRAM burden
+#             dataset.append({
+#                     'prompt': [
+#                         {'role': 'system', 'content': [{"type": "text", "text": SYSTEM_PROMPT}]},
+#                         {'role': 'user', 'content': [
+#                             {"type": "image", },  
+#                             {"type": "text", "text": question_sample},    
+#                         ]}
+#                     ],
+#                     'image':img_pil,
+#                     'answer':answer_sample,
+#                 })
+#             n+=2
+#     return dataset
 
-    for path in data_paths:
-        data = np.load(path, allow_pickle=True)
-        count = 0
-        for row in data:
-            if count >= data_limit and data_limit > 0:
-                break
-            img_pil = row["image"]
-            dataset.append({
-                "prompt": [
-                    {"role": "user", "content": [
-                        {"type": "image", "image": img_pil},
-                        {"type": "text", "text": row["text"]},
-                        {"type": "text", "text": PROMPT_THINK if thinktype=='think' else PROMPT_NOTHINK}
-                    ]}
-                ],
-                "image": img_pil,
-                "answer": row["answer"]
-            })
-            count += 1
-    # if split == 'train':
-    #     random.shuffle(dataset)
-    if length > 0 and length < len(dataset):
-        dataset = dataset[:length]
+# def get_medo1(split='train'):
+#     instruction = r'''Your task:
+# 1. Output the reasoning process in <think>...</think> and final answer in <answer>...</answer> tags.
+# 2. The output format should be as follows:
+# <think>
+# ...
+# </think>
+# <answer>
+# ...
+# </answer>
+# 3. No extra information or text outside of these tags.
+# '''
 
-    return dataset
+#     data = load_dataset('checkpoints/datasets/FreedomIntelligence/medical-o1-reasoning-SFT', 'en')[f'{split}']
+#     print(data[0])
+
+#     dataset = []
+#     for i, item in enumerate(data):
+#         conversation = [
+#         { "role": 'system',
+#           "content": [
+#              {'type': 'text','text': instruction}
+#          ]
+#         },
+#         { "role": "user",
+#           "content" : [
+#             {"type" : "text",  "text": item['Question']},
+#             {"type" : "image"}]
+#         },
+#         { "role" : "assistant",
+#           "content" : [
+#             {"type" : "text",  "text": '<think>\n'+ item['Complex_CoT'] + '\n</think>\n'},
+#             {"type" : "text",  "text": '<answer>\n'+ item['Response'] + '\n</answer>\n'}
+#             ]
+#         },
+#     ]
+#         dataset.append(conversation)
+#     return dataset
+
+
+
+# def get_medminist(root_path='datasets/MedMNIST', split='train', length=-1, special=None, data_limit=1000, thinktype='nothink'):
+#     PROMPT_THINK = r'''Your task:
+#     1. Think through the question step by step in no more than 3 sentences, enclose your reasoning process in <think>...</think> tags.
+#     2. Then answer the correct single-letter choice (A, B, C, D,...) inside <answer>...</answer> tags.'''
+
+#     PROMPT_NOTHINK = r'''
+#     Answer directly with the option's letter from the given choices (A, B, C, D,...)'''
+
+#     dataset = []
+#     data_folder = os.path.join(root_path, split)
+#     if special is None:
+#         data_paths = [os.path.join(data_folder, file) for file in os.listdir(data_folder) if os.path.isfile(os.path.join(data_folder, file))]
+#     else:
+#         data_paths = [os.path.join(data_folder, f"{special}.npy")]
+
+#     for path in data_paths:
+#         data = np.load(path, allow_pickle=True)
+#         count = 0
+#         for row in data:
+#             if count >= data_limit and data_limit > 0:
+#                 break
+#             img_pil = row["image"]
+#             dataset.append({
+#                 "prompt": [
+#                     {"role": "user", "content": [
+#                         {"type": "image", "image": img_pil},
+#                         {"type": "text", "text": row["text"]},
+#                         {"type": "text", "text": PROMPT_THINK if thinktype=='think' else PROMPT_NOTHINK}
+#                     ]}
+#                 ],
+#                 "image": img_pil,
+#                 "answer": row["answer"]
+#             })
+#             count += 1
+#     # if split == 'train':
+#     #     random.shuffle(dataset)
+#     if length > 0 and length < len(dataset):
+#         dataset = dataset[:length]
+
+#     return dataset
 
 
 
@@ -329,7 +329,8 @@ def get_slake(truncate=None, split='train', answer_type='closed', content_type='
     logging.info(f"Final dataset size: {len(dataset)} samples")
     logging.info(f"Answer type distribution: {open_count} open, {closed_count} closed")
     logging.info(f"Content type distribution: {content_dist}")
-
+    if split == 'test':
+        dataset = [dataset[2]]
     return dataset
 
 
@@ -379,15 +380,15 @@ def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
         # 构建选项字符串，只包含存在的选项
         options_parts = []
         if item.get('option_A'):
-            options_parts.append(f"A. {item['option_A']}")
+            options_parts.append(f"A. {item['option_A']}\n")
         if item.get('option_B'):
-            options_parts.append(f"B. {item['option_B']}")
+            options_parts.append(f"B. {item['option_B']}\n")
         if item.get('option_C'):
-            options_parts.append(f"C. {item['option_C']}")
+            options_parts.append(f"C. {item['option_C']}\n")
         if item.get('option_D'):
-            options_parts.append(f"D. {item['option_D']}")
+            options_parts.append(f"D. {item['option_D']}\n")
 
-        question_sample += f" Options: {' '.join(options_parts)}. Please answer with the correct single-letter choice."
+        question_sample += f" Options:\n{''.join(options_parts)}Please answer with the correct single-letter choice."
 
         if answer_sample not in option_map:
             continue

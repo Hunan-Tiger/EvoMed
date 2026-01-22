@@ -61,11 +61,11 @@ IMAGE_MODALITY_TAGS = {
     "xray": 0,
     "ct": 1,
     "mri": 2,
-    "ultrasound": 3,
-    "pet": 4,
-    "endoscopy": 5,
-    "fundoscopy": 6,
-    "pathology": 7,
+    # "ultrasound": 3,
+    # "pet": 4,
+    # "endoscopy": 5,
+    # "fundoscopy": 6,
+    # "pathology": 7,
 }
 
 ORGAN_TISSUE_TAGS = {

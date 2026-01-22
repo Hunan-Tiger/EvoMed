@@ -142,6 +142,8 @@ Your goal is to EVOLVE the knowledge base by learning from failures.
 
 
 def controller_prompt(problem, trajectories, ground_truth, knowledges):
+    if knowledges.lower() == '':
+        knowledges = "No Existing Retrieval Knowledge."
     return rf'''**Question:**
 {problem}
 

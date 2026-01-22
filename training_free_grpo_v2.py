@@ -233,25 +233,24 @@ class LLM():
         retrieval_time = time.time() - retrieval_start
         
         # 格式化知识
-        candicate_knowledges = [item['knowledge'] for item in self.current_retrieved_knowledge]
-        self.current_retrieved_knowledge = self.reranker.rerank(
+        
+        self.current_rerank_knowledge = self.reranker.rerank(
             question,
             rollouts['visual_findings'],
-            candicate_knowledges,
+            self.current_retrieved_knowledge,
             threshold=self.args.reranker_threshold,
             top_k=self.args.top_k_knowledges
         )
-        if self.current_retrieved_knowledge:
+        if self.current_rerank_knowledge:
             formatted_items = []
-            logging.info(f"  Retrieved {len(self.current_retrieved_knowledge)} knowledge items:")
-            for idx, item in enumerate(self.current_retrieved_knowledge):
+            logging.info(f"  Retrieved {len(self.current_rerank_knowledge)} knowledge items:")
+            for idx, item in enumerate(self.current_rerank_knowledge):
                 formatted_items.append(f"[{item['id']}]. {item['knowledge']}")
                 self.current_retrieved_knowledge_ids.append(item['id'])
                 
-                logging.info(f"    [{idx+1}] ID={item['id']}, Triple={item['triple_id']}")
-                logging.info(f"        Knowledge: {item['knowledge']}")
+                logging.info(f"  [{idx+1}] ID={item['id']}  Knowledge: {item['knowledge']}")
                 
-            self.formatted_special_knowledges = "\n\n".join(formatted_items)
+            self.formatted_special_knowledges = "\n".join(formatted_items)
         else:
             logging.info("  No relevant knowledge retrieved (KB empty or no match).")
         
@@ -285,8 +284,8 @@ class LLM():
             rollouts[f'knowledge_check_{i+1}'] = parse_tag(response, "Knowledge_Check")
             rollouts[f'reasoning_{i+1}'] = parse_tag(response, "Reasoning")
             rollouts[f'predicted_answer_{i+1}'] = parse_tag(response, "Answer")
-            rollouts[f'trajectory_{i+1}'] = f'<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n'+response
-            logging.info(f"  Full Response {i+1}: {response}")
+            rollouts[f'trajectory_{i+1}'] = f"<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n" + response
+            logging.info(f"  Full Response {i+1}: {rollouts[f'trajectory_{i+1}']}")
 
             # 使用评估器评估答案
             eval_result, eval_tokens = self.evaluator.evaluate(
@@ -298,7 +297,6 @@ class LLM():
                 self.total_tokens_consumed += eval_tokens
                 self.current_sample_tokens += eval_tokens
                 logging.info(f"  Evaluation tokens consumed: {eval_tokens}")
-
             rollouts[f'reward_{i+1}'] = eval_result
             
             rollout_time = time.time() - rollout_start
@@ -385,7 +383,7 @@ class LLM():
                 trajectories_summary_text += f"Trajectory {i+1} is correct, skipping in update konwledge.\n\n"
                 continue
             trajectories_summary_text += f"\n### Trajectory {i+1}):\n"
-            trajectories_summary_text += f"{rollouts[f'trajectory_summary_{i+1}']}\n"
+            trajectories_summary_text += f"{rollouts[f'trajectory_summary_{i+1}']}\n\n"
             trajectories_summary_text += f"Evaluation Result: The model answers {eval_result['result']} - {eval_result['reason']}\n\n"
         # 2. 构建更新 prompt
         prompt = controller_prompt(
@@ -523,11 +521,11 @@ def main(args):
     Agent = LLM(args=args)
 
     if args.exp_name == "slake":
-        from utils.datasets import get_slake as process_dataset
+        from utils.dataset import get_slake as process_dataset
     elif args.exp_name == "vqa-rad":
-        from utils.datasets import get_vqarad as process_dataset
+        from utils.dataset import get_vqarad as process_dataset
     elif args.exp_name == "omni-rad-closed":
-        from utils.datasets import get_omni_rad_closed as process_dataset
+        from utils.dataset import get_omni_rad_closed as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
@@ -724,8 +722,9 @@ if __name__ == "__main__":
     parser.add_argument("--rollout_top_p", type=float, default=0.95)
     parser.add_argument("--rollout_temperature", type=float, default=0.7)
     parser.add_argument("--rollout_max_tokens", type=int, default=5120)
+    parser.add_argument("--rollout_do_sample", action='store_true', default=True, help="Whether to use sampling in rollouts")
 
-    parser.add_argument("--reranker_threshold", type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--reranker_threshold", type=float, default=0.75, help="Reranker relevance threshold")
     parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
 
     args = parser.parse_args()

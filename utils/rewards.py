@@ -117,22 +117,22 @@ def xmlcount_reward_func(completions, **kwargs) -> list[float]:
 
 
 
-from Levenshtein import ratio as levenshtein_ratio
-def levenshtein_reward_func(prompts, completions, answer, **kwargs):
-    """Reward function that checks if the completion get solutions correctly."""
-    res = []
-    responses = [completion[0]['content'] for completion in completions]
-    q = prompts[0][-1]['content']
-    print('-'*20, f"Question:\n{q}", f"\nResponse:\n{responses[0]}", f"\nAnswer:\n{answer[0]}")
+# from Levenshtein import ratio as levenshtein_ratio
+# def levenshtein_reward_func(prompts, completions, answer, **kwargs):
+#     """Reward function that checks if the completion get solutions correctly."""
+#     res = []
+#     responses = [completion[0]['content'] for completion in completions]
+#     q = prompts[0][-1]['content']
+#     print('-'*20, f"Question:\n{q}", f"\nResponse:\n{responses[0]}", f"\nAnswer:\n{answer[0]}")
 
-    for completion, sol in zip(completions, answer):
-        completion = completion[0]['content']
-        if '<answer>' in completion:
-            t = completion.split('<answer>')[-1].split('</answer>')[0].strip()
-            res.append(levenshtein_ratio(t, sol)*0.5)
-        else:
-            res.append(0.0)
-    return res
+#     for completion, sol in zip(completions, answer):
+#         completion = completion[0]['content']
+#         if '<answer>' in completion:
+#             t = completion.split('<answer>')[-1].split('</answer>')[0].strip()
+#             res.append(levenshtein_ratio(t, sol)*0.5)
+#         else:
+#             res.append(0.0)
+#     return res
 
 
 

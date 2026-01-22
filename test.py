@@ -9,7 +9,6 @@ import logging
 import sys
 import numpy as np
 from utils.prompt import query_system_prompt, query_prompt
-from utils.utils import inference_chat_local, get_cur_time, extract_answer, model_loader, inference_chat_api, API_KEY_list, parse_tag
 from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_evaluator_inference_func, create_classifier_inference_func
 from utils.utils import (
     inference_chat_local, 
@@ -18,7 +17,8 @@ from utils.utils import (
     extract_answer, 
     model_loader,
     API_KEY_list,
-    parse_tag
+    parse_tag,
+    inference_chat_api_vllm
 )
 from retrieval.knowledge_base import (
     TagKnowledgeBase, 
@@ -108,9 +108,10 @@ class LLM():
         classifier_inference_func = create_classifier_inference_func(self.args)
         self.classifier = RerietrievalClassifier(classifier_inference_func, self.args)
         logging.info(f"Rerietrieval Classifier initialized with model: {self.args.classifier_model}")
-        # 初始化答案评估器
+        # 初始化Judger
         eval_inference_func = create_evaluator_inference_func(self.args)
-        self.evaluator = AnswerEvaluator(eval_inference_func)
+        from utils.utils import Test_Judger
+        self.evaluator = Test_Judger(eval_inference_func)
         logging.info(f"Answer Evaluator initialized with model: {self.args.evaluator_model}")
         
         logging.info("=" * 80)
@@ -120,7 +121,7 @@ class LLM():
 
     def inference(self, chat):
         if self.args.infer_mode == "api":
-            return inference_chat_api(chat, self.args)
+            return inference_chat_api_vllm(chat, self.args)
         else:
             return inference_chat_local(self.model, self.tokenizer, chat, self.args)
     
@@ -237,28 +238,27 @@ class LLM():
                     retrieval_time = time.time() - retrieval_start
                     
                     # 格式化知识
-                    candicate_knowledges = [item['knowledge'] for item in self.current_retrieved_knowledge]
-                    self.current_retrieved_knowledge = self.reranker.rerank(
+                    self.current_rerank_knowledge = self.reranker.rerank(
                         question,
                         rollouts['visual_findings'],
-                        candicate_knowledges,
+                        self.current_retrieved_knowledge,
                         threshold=self.args.reranker_threshold,
                         top_k=self.args.top_k_knowledges
                     )
-                    if self.current_retrieved_knowledge:
+                    if self.current_rerank_knowledge:
                         formatted_items = []
-                        logging.info(f"  Retrieved {len(self.current_retrieved_knowledge)} knowledge items:")
-                        for idx, item in enumerate(self.current_retrieved_knowledge):
+                        logging.info(f"  Retrieved {len(self.current_rerank_knowledge)} knowledge items:")
+                        for idx, item in enumerate(self.current_rerank_knowledge):
                             formatted_items.append(f"[{item['id']}]. {item['knowledge']}")
-                            logging.info(f"    [{idx+1}] ID={item['id']}, Triple={item['triple_id']}")
-                            logging.info(f"        Knowledge: {item['knowledge']}")
                             
-                        self.formatted_special_knowledges = "\n\n".join(formatted_items)
+                            logging.info(f"  [{idx+1}] ID={item['id']}  Knowledge: {item['knowledge']}")
+                            
+                        self.formatted_special_knowledges = "\n".join(formatted_items)
                     else:
                         logging.info("  No relevant knowledge retrieved.")
                     
                     logging.info(f"  Retrieval time: {retrieval_time:.4f}s")
-                    rollouts['retrieved_knowledge_count'] = len(self.current_retrieved_knowledge)
+                    rollouts['retrieved_knowledge_count'] = len(self.current_rerank_knowledge)
             else:
                 logging.info("  Knowledge base empty or classifier not initialized.")
                 rollouts['retrieved_knowledge_count'] = 0
@@ -297,12 +297,11 @@ class LLM():
         rollouts['knowledge_check'] = parse_tag(response, "Knowledge_Check")
         rollouts['reasoning'] = parse_tag(response, "Reasoning")
         rollouts['predicted_answer'] = parse_tag(response, "Answer")
-        rollouts['trajectory'] = response
-        logging.info(f"  Full Response: {response}")
+        rollouts['trajectory'] = f"<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n" + response
+        logging.info(f"  Full Response: {rollouts['trajectory']}")
 
         # 使用评估器评估答案
         eval_result, eval_tokens = self.evaluator.evaluate(
-            rollouts['question'],
             response,
             rollouts['answer']
         )
@@ -333,11 +332,11 @@ def main(args):
     Agent = LLM(args=args)
     
     if args.exp_name == "slake":
-        from utils.datasets import get_slake as process_dataset
+        from utils.dataset import get_slake as process_dataset
     elif args.exp_name == "vqa-rad":
-        from utils.datasets import get_vqarad as process_dataset
+        from utils.dataset import get_vqarad as process_dataset
     elif args.exp_name == "omni-rad-closed":
-        from utils.datasets import get_omni_rad_closed as process_dataset
+        from utils.dataset import get_omni_rad_closed as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
@@ -456,7 +455,7 @@ def main(args):
             raise
     
     # 最终保存
-    Agent.save_checkpoint(idx, all_metrics, failed_indices)
+    # Agent.save_checkpoint(idx, all_metrics, failed_indices)
     
     total_time = time.time() - start_time
     
@@ -541,6 +540,12 @@ def main(args):
         logging.info(f"Rollouts saved to: {rollouts_file}")
     
     logging.info(f"Log saved to: {Agent.log_file}")
+
+
+    # 删除检查点文件
+    if os.path.exists(Agent.checkpoint_file):
+        os.remove(Agent.checkpoint_file)
+        logging.info(f"Checkpoint file deleted: {Agent.checkpoint_file}")
     
     return results
 
@@ -554,7 +559,7 @@ if __name__ == "__main__":
     parser.add_argument("--infer_mode", type=str, default="api", choices=["local", "api"], help="Inference mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
-    parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
+    parser.add_argument("--base_url", "--bu", type=str, default="https://genaiapi.shanghaitech.edu.cn/api/v1/start", help="API base URL for inference if using API mode")
 
     parser.add_argument("--exp_name", "--en", type=str, default="slake", help="Experiment name")
     parser.add_argument("--data_split", type=str, default="test", help="Dataset split")
@@ -567,12 +572,14 @@ if __name__ == "__main__":
 
     parser.add_argument("--grpo_n", type=int, default=1, help="Number of rollouts per sample")
     parser.add_argument("--rollout_top_p", type=float, default=0.01, help="Top-p sampling")
+    parser.add_argument("--rollout_top_k", type=int, default=1, help="Top-k sampling")
     parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.1, help="Repetition penalty")
     parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=6, help="No repeat ngram size")
-    parser.add_argument("--rollout_temperature", '--temp', type=float, default=0.0, help="Temperature")
+    parser.add_argument("--rollout_temperature", '--temp', type=float, default=0, help="Temperature")
     parser.add_argument("--rollout_max_tokens", type=int, default=5120, help="Max tokens")
+    parser.add_argument("--rollout_do_sample", action='store_true', default=False, help="Whether to use sampling in rollouts")
 
-    parser.add_argument("--reranker_threshold", type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--reranker_threshold", type=float, default=0.75, help="Reranker relevance threshold")
     parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
     
     parser.add_argument("--give_knowledges", "--gk", type=str, default="true", help="Whether to provide knowledge")

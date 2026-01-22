@@ -466,9 +466,9 @@ def main(args):
     Agent = LLM(args=args)
 
     if args.exp_name == "slake":
-        from utils.datasets import get_slake as process_dataset
+        from utils.dataset import get_slake as process_dataset
     elif args.exp_name == "vqa-rad":
-        from utils.datasets import get_vqarad as process_dataset
+        from utils.dataset import get_vqarad as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 

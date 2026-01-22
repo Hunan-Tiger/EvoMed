@@ -106,6 +106,134 @@ def inference_chat_local(model, tokenizer, messages, args):
 
     return output_text
 
+def inference_chat_api_vllm(chat, args, max_retries=5):
+    """
+    使用 requests 直接调用 vLLM 兼容的 API 端点，
+    支持更多生成参数控制，适用于 Qwen2.5-VL 模型
+    """
+    url = args.base_url
+    
+    headers = {
+        "Content-Type": "application/json",
+    }
+    if hasattr(args, 'api_key') and args.api_key:
+        headers["Authorization"] = f"Bearer {args.api_key}"
+    
+    # 格式化消息
+    formatted_messages = []
+    for msg in chat:
+        if isinstance(msg.get("content"), list):
+            formatted_content = []
+            for item in msg["content"]:
+                if item.get("type") == "image":
+                    # 处理图像
+                    image = item.get("image")
+                    if image is not None:
+                        base64_image = image_to_base64(image)
+                        formatted_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            }
+                        })
+                elif item.get("type") == "image_url":
+                    # 已经是 URL 格式
+                    formatted_content.append(item)
+                elif item.get("type") == "text":
+                    formatted_content.append({
+                        "type": "text",
+                        "text": item["text"]
+                    })
+            formatted_messages.append({
+                "role": msg["role"],
+                "content": formatted_content
+            })
+        else:
+            formatted_messages.append(msg)
+    
+    # 构建请求体，包含所有生成参数
+    payload = {
+        "model": args.model_name_or_path,
+        "messages": formatted_messages,
+        "max_tokens": args.rollout_max_tokens,
+        "do_sample": args.rollout_do_sample,
+        "temperature": args.rollout_temperature,
+        "top_p": args.rollout_top_p,
+        "seed": args.seed,
+        # vLLM 支持的额外参数
+        "top_k": getattr(args, 'rollout_top_k', -1),  # -1 表示禁用
+        "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
+        "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
+        "stop": getattr(args, 'stop_tokens', None),
+        "presence_penalty": getattr(args, 'presence_penalty', 0.0),
+        "frequency_penalty": getattr(args, 'frequency_penalty', 0.0),
+    }
+    
+    # 移除 None 值
+    payload = {k: v for k, v in payload.items() if v is not None}
+    
+    logging.info(f"--- Calling vLLM API with parameters ---")
+    logging.info(f"  url: {url}")
+    logging.info(f"  model: {payload.get('model')}")
+    logging.info(f"  max_tokens: {payload.get('max_tokens')}")
+    logging.info(f"  do_sample: {payload.get('do_sample')}")
+    logging.info(f"  temperature: {payload.get('temperature')}")
+    logging.info(f"  top_p: {payload.get('top_p')}")
+    logging.info(f"  top_k: {payload.get('top_k')}")
+    logging.info(f"  repetition_penalty: {payload.get('repetition_penalty')}")
+    logging.info(f"  no_repeat_ngram_size: {payload.get('no_repeat_ngram_size')}")
+    logging.info(f"  seed: {payload.get('seed')}")
+    logging.info(f"----------------------------------------")
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=120.0
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            content = result["choices"][0]["message"]["content"]
+            
+            # 构建 usage 对象
+            usage_data = result.get("usage", {})
+            
+            class Usage:
+                def __init__(self, data):
+                    self.prompt_tokens = data.get("prompt_tokens", 0)
+                    self.completion_tokens = data.get("completion_tokens", 0)
+                    self.total_tokens = data.get("total_tokens", 0)
+            
+            usage = Usage(usage_data)
+            return content, usage
+            
+        except requests.exceptions.Timeout as e:
+            logging.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+                
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:  # Rate limit
+                logging.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(2 ** attempt)
+            else:
+                logging.error(f"HTTP error: {e}, Response: {response.text}")
+                raise
+                
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+    
+    return None, None
+
 
 def inference_chat_api(messages, args, max_retries=5):
     """
@@ -190,18 +318,32 @@ def inference_chat_api(messages, args, max_retries=5):
 
     for attempt in range(max_retries):
         try:
+            # 将不支持的标准参数移入 extra_body
+            extra_body = {
+                "do_sample": False,
+                "top_k": getattr(args, 'rollout_top_k', 1),
+                "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
+                "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
+            }
+            logging.info(f"--- Calling API with parameters ---")
+            logging.info(f"  model: {args.model_name_or_path}")
+            logging.info(f"  max_tokens: {args.rollout_max_tokens}")
+            logging.info(f"  temperature: {args.rollout_temperature}")
+            logging.info(f"  top_p: {args.rollout_top_p}")
+            logging.info(f"  extra_body: {extra_body}")
+            logging.info(f"  timeout: 120.0")
+            logging.info(f"  seed: {args.seed}")
+            logging.info(f"------------------------------------")
+
             response = client.chat.completions.create(
                 model=args.model_name_or_path,
                 messages=formatted_messages,
                 max_tokens=args.rollout_max_tokens,
                 temperature=args.rollout_temperature,
                 top_p=args.rollout_top_p,
-                # 将不支持的标准参数移入 extra_body
-                extra_body={
-                    "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
-                    "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
-                },
-                timeout=120.0
+                extra_body=extra_body,
+                timeout=120.0,
+                seed=args.seed,
             )
             if response and response.choices:
                 content = response.choices[0].message.content
@@ -344,6 +486,118 @@ def calculate_word_recall(ground_truth, prediction):
     intersection = gt_words & pred_words
     recall = len(intersection) / len(gt_words)
     return recall
+
+
+
+# 用于test上的评估
+class Test_Judger:
+    def __init__(self, inference_func):
+
+        self.inference = inference_func
+
+        self.JUDGER_SYSTEM_PROMPT = r"""You are a Medical AI Exam Grader. Grade the model's answer against the Ground Truth (GT).
+
+**GRADING RULES:**
+
+1. **Multiple Choice:** Match by letter (A/B/C/D) or option text. Multi-select requires exact match.
+2. **Yes/No:** "Yes"="True"="Positive"="Present"; "No"="False"="Negative"="Absent".
+3. **Robustness:** Ignore case, punctuation, filler text (e.g., "The answer is A" → "A. Pneumonia", "A" -> "A. Pneumonia").
+
+**Note:** Grade as "correct" if the final answer matches GT, regardless of reasoning quality.
+
+**OUTPUT (JSON only):**
+{"status": "correct" | "wrong", "reason": "Brief explanation."}
+"""
+    def _extract_answer(self, vlm_response: str) -> str:
+        """
+        从 VLM 输出中提取 <Answer> 标签内容。
+        如果找不到标签，返回最后一段文本（兜底）。
+        """
+        # 尝试匹配 <Answer>...</Answer> (支持换行)
+        # match = re.search(r"<Answer>(.*?)</Answer>", vlm_response, re.DOTALL | re.IGNORECASE)
+        # if match:
+        #     return match.group(1).strip()
+        
+        # match_open = re.search(r"<Answer>(.*)", vlm_response, re.DOTALL | re.IGNORECASE)
+        # if match_open:
+        #     return match_open.group(1).strip()
+        
+        # 如果格式不对，选择最后一行
+        final_answer = vlm_response.strip().splitlines()[-1]
+        return final_answer
+    
+    def evaluate(
+        self, 
+        vlm_response: str, 
+        ground_truth: str
+    ):
+        """
+        评估响应的正确性
+        
+        Args:
+            response: 模型响应
+            ground_truth: 标准答案
+        
+        Returns:
+            correct/wrong
+        """
+        # 使用 LLM 评估
+        extracted_pred = self._extract_answer(vlm_response)
+        logging.info(f"Extracted Model Answer for Judging: {extracted_pred}")
+
+        prompt = f"**Ground Truth:** {ground_truth}\n**Model Answer:** {extracted_pred}"
+        
+        chat = [{"role": "system", "content": self.JUDGER_SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}]
+        
+        response = self.inference(chat)
+        if isinstance(response, tuple) and len(response) == 2:
+            content, usage = response
+            response = content 
+        
+        return self._parse_evaluation(response), usage.total_tokens if usage and hasattr(usage, 'total_tokens') else None
+    
+    
+    def _parse_evaluation(self, response: str):
+        """解析评估响应"""
+        import re
+        import json
+        
+        try:
+            # 尝试提取 JSON
+            json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group(1))
+            else:
+                # 尝试直接解析
+                json_match = re.search(r'\{[^{}]*\}', response, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    result = json.loads(response)
+            
+            eval_result = result.get('status', 'No status').lower().strip()
+            critique = result.get('reason', 'No reason provided')
+            
+            # 标准化结果
+            if 'correct' in eval_result and 'wrong' not in eval_result:
+                eval_result = 'correct'
+            else:
+                eval_result = 'wrong'
+            return {'result': eval_result, 'reason': f"{critique}"}
+        
+        except (json.JSONDecodeError, KeyError, TypeError) as e:
+            logging.warning(f"Failed to parse evaluation JSON: {e}")
+            logging.warning(f"Response: {response}")
+            # 降级处理：从文本中提取
+            response_lower = response.strip().lower()
+            
+            if 'correct' in response_lower and 'wrong' not in response_lower:
+                return {'result': 'correct', 'reason': 'Parsed from text (fallback)'}
+            else:
+                return {'result': 'wrong', 'reason': 'Parse failed, default to wrong'}
+
+    
 
 
 API_KEY_list = {

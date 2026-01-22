@@ -12,7 +12,7 @@ from retrieval.knowledge_base import (
     ID_TO_MODALITY,
     ID_TO_ORGAN
 )
-from utils.utils import inference_chat_api
+from utils.utils import inference_chat_api_vllm
 
 # ==================== 分类 Prompt ====================
 
@@ -84,9 +84,8 @@ EVALUATION_SYSTEM_PROMPT = """You are a Medical Logic Auditor. Your task is to e
 
 **Step 1: Answer Correctness Assessment**
 Compare the VLM's response with the Ground Truth:
-- **CORRECT**: As long as the answer is semantically equivalent to GT (same meaning)
+- **CORRECT**: The VLM's output matches the GT exactly in meaning
 - **WRONG**: The answer differs from GT in any way (missing information, extra information, or incorrect information)
-- This step is very important and will affect the accuracy statistics of the final experiment. Please strictly judge whether the answer output by VLM is semantically equivalent to GT.
 
 **Step 2: Error Type Classification (Only if WRONG)**
 If the answer is wrong, identify the root cause:
@@ -95,6 +94,7 @@ If the answer is wrong, identify the root cause:
    - The VLM's <Visual_Findings> fundamentally contradict the GT
    - Example: VLM describes "clear lungs" but GT indicates "pneumonia with consolidation"
    - The error originates from incorrect visual interpretation
+   - Erroneously recognized anatomical structures or imaging modalities (e.g., misclassifying a shoulder MRI as an ankle MRI).
 
 2. **reasoning_logic_error**:
    - The VLM's <Visual_Findings> align with GT (correct observations)
@@ -344,18 +344,18 @@ class AnswerEvaluator:
 def create_evaluator_inference_func(global_args=None):
     """
     创建评估器的推理函数
-    
     可以使用本地小模型或 API
     """
     class EvalArgs:
         def __init__(self):
-            self.model_name_or_path = global_args.classifier_model
+            self.model_name_or_path = global_args.evaluator_model
             # 将温度设为0以消除随机性，使输出尽可能固定
-            self.rollout_temperature = 0.0
+            self.rollout_temperature = 0
             self.rollout_max_tokens = 2048
             self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
             self.rollout_top_p = 0.01
+            self.rollout_do_sample = False
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它
@@ -364,7 +364,7 @@ def create_evaluator_inference_func(global_args=None):
     args = EvalArgs()
     
     def inference_func(chat):
-        return inference_chat_api(chat, args)
+        return inference_chat_api_vllm(chat, args)
     
     return inference_func
 
@@ -384,6 +384,7 @@ def create_classifier_inference_func(global_args=None):
             self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
             self.rollout_top_p = 0.01
+            self.rollout_do_sample = False
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它
@@ -393,6 +394,6 @@ def create_classifier_inference_func(global_args=None):
     args = ClassifyArgs()
     
     def inference_func(chat):
-        return inference_chat_api(chat, args)
+        return inference_chat_api_vllm(chat, args)
     
     return inference_func
