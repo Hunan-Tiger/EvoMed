@@ -111,15 +111,18 @@
 #     content_type_counter[item['content_type']] += 1
 # print("Answer Type Distribution:", answer_type_counter)
 # print("Content Type Distribution:", content_type_counter)
+from utils.dataset import get_pathvqa as process_dataset
+data = process_dataset(truncate=2, split='test', seed=42)
+print(data[0])
 
 
 
-from utils.utils import parse_tag
+# from utils.utils import parse_tag
 
-res = '''<Answer>
-Yes, this image is abnormal '''
-b = parse_tag(res, 'Answer')
-print(b)
+# res = '''<Answer>
+# Yes, this image is abnormal '''
+# b = parse_tag(res, 'Answer')
+# print(b)
 
 
 
@@ -127,9 +130,33 @@ print(b)
 # python test.py --en slake --at closed --dt 500 --ct all --model qwen2.5-vl-instruct --em qwen2.5-vl-instruct --cm qwen2.5-vl-instruct --bu https://genaiapi.shanghaitech.edu.cn/api/v1/start --ak skd --gk true
 
 
-vlm_response_text = '''<Visual_Findings>The image is a sagittal CT scan showing the spine, abdomen, and pelvis. The vertebral bodies appear aligned with normal curvature. The abdominal organs, including the intestines, are visible with gas patterns. There are no obvious masses, fluid collections, or structural disruptions. The bony structures of the spine and pelvis appear intact without fractures or lesions.</Visual_Findings>
-<Knowledge_Check> The relevant medical knowledge supports that a normal abdominal CT scan should show no abnormal densities, masses, fluid collections, or structural distortions, which aligns with the visual findings.</Knowledge_Check>
-<Reasoning>The visual findings indicate that the spine is aligned normally, the abdominal organs are in their typical positions, and there are no masses, fluid collections, or structural disruptions. The bowel appears to have normal gas patterns without signs of thickening, dilation, or pneumatosis. All observed features are consistent with a normal study. Therefore, no visible abnormalities are present.</Reasoning>
-<B>'''
-lines = vlm_response_text.strip().splitlines()[-1]
-print(lines)
+# vlm_response_text = '''<Visual_Findings>The image is a sagittal CT scan showing the spine, abdomen, and pelvis. The vertebral bodies appear aligned with normal curvature. The abdominal organs, including the intestines, are visible with gas patterns. There are no obvious masses, fluid collections, or structural disruptions. The bony structures of the spine and pelvis appear intact without fractures or lesions.</Visual_Findings>
+# <Knowledge_Check> The relevant medical knowledge supports that a normal abdominal CT scan should show no abnormal densities, masses, fluid collections, or structural distortions, which aligns with the visual findings.</Knowledge_Check>
+# <Reasoning>The visual findings indicate that the spine is aligned normally, the abdominal organs are in their typical positions, and there are no masses, fluid collections, or structural disruptions. The bowel appears to have normal gas patterns without signs of thickening, dilation, or pneumatosis. All observed features are consistent with a normal study. Therefore, no visible abnormalities are present.</Reasoning>
+# <B>'''
+# lines = vlm_response_text.strip().splitlines()[-1]
+# print(lines)
+
+class Args:
+    rollout_max_tokens = 512
+    rollout_temperature = 0.0
+    rollout_top_p = 0.01
+
+args = Args()
+
+# 模拟输入数据
+# 注意：你需要把原来 process_vision_info 的逻辑调整为生成下面的结构
+chat_messages = [
+    {
+        "role": "user",
+        "content": [
+            {"type": "text", "text": "这张图里有什么？"},
+            {"type": "image", "image": "datasets/OmniMedVQA-Radiology-Closed/Images/0d9b1283-fc24-4fd3-a520-bc5d563e13e1.png"} # 传入本地路径或PIL对象
+        ]
+    }
+]
+
+# 调用 (不再需要传 model/tokenizer)
+from utils.utils import inference_chat_local
+output = inference_chat_local(chat_messages, args)
+print(output)

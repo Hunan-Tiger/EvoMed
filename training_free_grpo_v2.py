@@ -6,7 +6,7 @@ import os
 import argparse
 from typing import List, Dict
 from utils.prompt import query_system_prompt, query_prompt, summarize_system_prompt, summarize_prompt, controller_system_prompt, controller_prompt
-from utils.utils import inference_chat_local, get_cur_time, extract_answer, model_loader, inference_chat_api, API_KEY_list, parse_tag
+from utils.utils import inference_chat_local, get_cur_time, extract_answer, inference_chat_api, API_KEY_list, parse_tag, inference_chat_api_vllm
 import logging
 import sys
 import pickle
@@ -20,6 +20,7 @@ class LLM():
         args.api_key = API_KEY_list.get(args.api_key)
         self.model_name_or_path = args.model_name_or_path 
         self.args = args
+        self.args_backup = args
         
         # 日志配置
         os.makedirs(f'logs/{self.args.exp_name}', exist_ok=True)
@@ -76,8 +77,6 @@ class LLM():
         # 加载推理模型
         if self.args.infer_mode != "api":
             logging.info(f"Loading local model: {self.model_name_or_path}")
-            self.model, self.tokenizer = model_loader(name_or_path=self.model_name_or_path, args=self.args)
-            logging.info("Local model loaded successfully.")
         else:
             logging.info(f"Using API mode with model: {self.model_name_or_path}")
 
@@ -99,11 +98,18 @@ class LLM():
         self.total_tokens_consumed = 0
         self.current_sample_tokens = 0
 
-    def inference(self, chat):
+    def inference(self, chat, infer_type = 'query'):
+        if infer_type == 'query':
+            self.args.rollout_temperature = 0.9
+            self.args.seed = None
+        elif infer_type == 'summarize' or infer_type == 'controller':
+            self.args.rollout_temperature = 0.3
+            self.args.seed = None
+
         if self.args.infer_mode == "api":
-            return inference_chat_api(chat, self.args)
+            return inference_chat_api_vllm(chat, self.args)
         else:
-            return inference_chat_local(self.model, self.tokenizer, chat, self.args)
+            return inference_chat_local(chat, self.args)
 
     def save_checkpoint(self, idx):
         """保存训练检查点"""
@@ -126,8 +132,7 @@ class LLM():
 
     def save_kb_version(self, global_idx):
         """保存知识库版本快照"""
-        safe_time = get_cur_time().replace(":", "-").replace(" ", "_")
-        version_path_pkl = os.path.join(self.kb_version_dir, f"kb_step_{global_idx}_{safe_time}.pkl")
+        version_path_pkl = os.path.join(self.kb_version_dir, f"kb_step_{global_idx}.pkl")
         version_path_json = version_path_pkl.replace('.pkl', '.json')
         
         # 保存 pickle 和 json 版本
@@ -229,11 +234,8 @@ class LLM():
                 modality_ids=mod_ids,
                 organ_ids=org_ids,
             )
-
-        retrieval_time = time.time() - retrieval_start
         
         # 格式化知识
-        
         self.current_rerank_knowledge = self.reranker.rerank(
             question,
             rollouts['visual_findings'],
@@ -253,7 +255,7 @@ class LLM():
             self.formatted_special_knowledges = "\n".join(formatted_items)
         else:
             logging.info("  No relevant knowledge retrieved (KB empty or no match).")
-        
+        retrieval_time = time.time() - retrieval_start
         logging.info(f"  Retrieval time: {retrieval_time:.4f}s")
 
         # 构建 chat
@@ -267,12 +269,35 @@ class LLM():
                 {"type": "text", "text": prompt},
             ]
         })
+        # 在 vLLM 的推理中，虽然支持 System Role，但在处理多模态任务时，模型往往被大量的 Vision Tokens（图像信息）占据注意力，System Prompt 距离生成的 Token 位置太远，容易被“遗忘”
+        # Qwen2.5-VL-Instruct 经过了 RLHF（人类反馈强化学习），被训练成“高效回答问题”。如果它识别出这是一个选择题，它的训练本能是直接给选项。你需要用强硬的 Prompt 格式（如 XML 标签 <Reasoning>）并在 User Prompt 中重申，才能“对抗”这种本能。
+        if self.args.model_name_or_path == 'Qwen2.5-VL-7B-Instruct':
+            instruction_text = rf'''You are an expert Medical AI Assistant. Your task is to analyze medical images and answer clinical questions.
+Analyze the medical image and the provided knowledge (if any) to answer the question.
+
+Output format:
+<Reasoning> Your step-by-step diagnostic reasoning process. </Reasoning>
+<Answer> Yes. or No. or option (e.g., A, B, C, D) or organ name. etc. </Answer>
+
+Note: Use the knowledge as a reference, but prioritize the visual evidence in the medical image.
+
+'''
+            chat = []
+            chat.append({
+            'role': 'user',
+            'content': [
+                {"type": "text", "text": instruction_text},
+                {"type": "image", "image": rollouts['image']},
+                {"type": "text", "text": prompt},
+            ]
+        })
 
         # 3. 执行 rollouts
         logging.info(f"[STEP 3] Executing {grpo_n} Rollouts")
         for i in range(grpo_n):
             rollout_start = time.time()
             
+            response=''
             response = self.inference(chat)
             if isinstance(response, tuple) and len(response) == 2:
                 content, usage = response
@@ -285,12 +310,12 @@ class LLM():
             rollouts[f'reasoning_{i+1}'] = parse_tag(response, "Reasoning")
             rollouts[f'predicted_answer_{i+1}'] = parse_tag(response, "Answer")
             rollouts[f'trajectory_{i+1}'] = f"<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n" + response
-            logging.info(f"  Full Response {i+1}: {rollouts[f'trajectory_{i+1}']}")
+            logging.info(f"  Full Response {i+1}: {response}")
 
             # 使用评估器评估答案
             eval_result, eval_tokens = self.evaluator.evaluate(
                 rollouts['question'],
-                response,
+                response,#rollouts[f'trajectory_{i+1}'],
                 rollouts['answer']
             )
             if eval_tokens is not None:
@@ -318,54 +343,64 @@ class LLM():
         return rollouts
 
     def summarize_process(self, rollouts):
-        """总结每个 trajectory"""
+        """总结所有 trajectories（一次性处理）"""
         logging.info("[SUMMARIZE PROCESS] Starting")
         
-        summaries = []
+        # 检查是否所有 rollout 的结果都相同（全对或全错），若是，则跳过知识更新
+        all_results = [rollouts[f'reward_{i+1}']['result'] for i in range(self.args.grpo_n)]
+        if len(set(all_results)) == 1:
+            logging.info(f"All {self.args.grpo_n} rollouts have the same result ('{all_results[0]}'). Skipping summarize.")
+            return "No summarize needed."
+        
+        summary_start = time.time()
+        
+        # 构建所有轨迹的综合描述
+        problem = rollouts['question']
+        groundtruth = rollouts['answer']
+        
+        trajectories_text = ""
         for i in range(self.args.grpo_n):
-            summary_start = time.time()
-            if rollouts[f'reward_{i+1}']['result'] == 'correct':
-                logging.info(f"  Trajectory {i+1} is already correct, skipping summary.")
-                summaries.append("No summary needed for correct trajectory.")
-                rollouts[f'trajectory_summary_{i+1}'] = "No summary needed for correct trajectory."
-                continue
-            
-            problem = rollouts['question']
             trajectory = rollouts[f'trajectory_{i+1}']
             eval_result = rollouts[f'reward_{i+1}']
-            evaluation = f"This trajectory delivers **{eval_result['result']}** answer, because {eval_result['reason']}."
-            groundtruth = rollouts['answer']
-
-            chat = []
-            prompt = summarize_prompt(problem, trajectory, evaluation, groundtruth)
-            chat.append({"role": "system", "content": summarize_system_prompt})
-            chat.append({
-                "role": 'user',
-                'content': [
-                            {"type": "text", "text": prompt}
-                            ]
-            })
+            evaluation = f"{eval_result['result']} answer"#f"**{eval_result['result']}** answer, because {eval_result['reason']}"
             
-            response = self.inference(chat)
-            if isinstance(response, tuple) and len(response) == 2:
-                content, usage = response
-                response = content
-            if usage and hasattr(usage, 'total_tokens') and usage.total_tokens is not None:
-                self.total_tokens_consumed += usage.total_tokens
-                self.current_sample_tokens += usage.total_tokens
+            trajectories_text += f"""
+--- Trajectory {i+1} ---
+{trajectory}
 
-            summaries.append(response)
+Evaluation: {evaluation}
+"""
+        
+        # 使用合并后的 prompt
+        prompt = summarize_prompt(problem, trajectories_text, groundtruth)
+        
+        chat = []
+        chat.append({"role": "system", "content": summarize_system_prompt})
+        chat.append({
+            "role": 'user',
+            'content': [
+                        {"type": "text", "text": prompt}
+                        ]
+        })
+        
+        response = self.inference(chat, infer_type='summarize')
+        if isinstance(response, tuple) and len(response) == 2:
+            content, usage = response
+            response = content
+        if usage and hasattr(usage, 'total_tokens') and usage.total_tokens is not None:
+            self.total_tokens_consumed += usage.total_tokens
+            self.current_sample_tokens += usage.total_tokens
 
-            rollouts[f'trajectory_summary_{i+1}'] = response
-            
-            summary_time = time.time() - summary_start
-            logging.info(f"  Summary {i+1}/{self.args.grpo_n}:")
-            logging.info(f"    Original result: {eval_result['result']}")
-            logging.info(f"    Summary: {response}")
-            logging.info(f"    Summary time: {summary_time:.2f}s")
+        rollouts['summary'] = response
+        
+        summary_time = time.time() - summary_start
+        logging.info(f"  Batch Summary for {self.args.grpo_n} trajectories:")
+        logging.info(f"    Results: {all_results}")
+        logging.info(f"    Summary: {response}")
+        logging.info(f"    Summary time: {summary_time:.2f}s")
 
         logging.info("[SUMMARIZE PROCESS] Complete")
-        return summaries
+        return response
     
     def update_knowledge(self, rollouts):
         """更新知识库（使用当前分类的三元ID）"""
@@ -374,17 +409,14 @@ class LLM():
         
         update_start = time.time()
         # 1. 准备 trajectory summaries
+        # 检查是否所有 rollout 的结果都相同（全对或全错），若是，则跳过知识更新
+        all_results = [rollouts[f'reward_{i+1}']['result'] for i in range(self.args.grpo_n)]
+        if len(set(all_results)) == 1:
+            logging.info(f"All {self.args.grpo_n} rollouts have the same result ('{all_results[0]}'). Skipping knowledge update.")
+            return "No knowledge update needed."
+        
         trajectories_summary_text = ""
-        for i in range(self.args.grpo_n):
-            eval_result = rollouts[f'reward_{i+1}']
-            if eval_result['result'] == 'correct':
-                logging.info(f"  Trajectory {i+1} is correct, skipping in update konwledge.")
-                trajectories_summary_text += f"\n### Trajectory {i+1}):\n"
-                trajectories_summary_text += f"Trajectory {i+1} is correct, skipping in update konwledge.\n\n"
-                continue
-            trajectories_summary_text += f"\n### Trajectory {i+1}):\n"
-            trajectories_summary_text += f"{rollouts[f'trajectory_summary_{i+1}']}\n\n"
-            trajectories_summary_text += f"Evaluation Result: The model answers {eval_result['result']} - {eval_result['reason']}\n\n"
+        trajectories_summary_text += f"{rollouts[f'summary']}\n"
         # 2. 构建更新 prompt
         prompt = controller_prompt(
             rollouts['question'],
@@ -402,7 +434,8 @@ class LLM():
                             {"type": "text", "text": prompt}
                             ]
             })
-        response = self.inference(chat)
+        
+        response = self.inference(chat, infer_type='controller')
         if isinstance(response, tuple) and len(response) == 2:
                 content, usage = response
                 response = content
@@ -517,7 +550,6 @@ class LLM():
 
 
 def main(args):
-    random.seed(args.seed)
     Agent = LLM(args=args)
 
     if args.exp_name == "slake":
@@ -526,10 +558,12 @@ def main(args):
         from utils.dataset import get_vqarad as process_dataset
     elif args.exp_name == "omni-rad-closed":
         from utils.dataset import get_omni_rad_closed as process_dataset
+    elif args.exp_name == "pathvqa":
+        from utils.dataset import get_pathvqa as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
-    data = process_dataset(truncate=args.dataset_truncate, split=args.data_split, answer_type=args.answer_type, content_type=args.content_type, seed=args.seed)
+    data = process_dataset(truncate=args.dataset_truncate, split=args.data_split, answer_type=args.answer_type, content_type=args.content_type)
     
     logging.info("=" * 80)
     logging.info("TRAINING START")
@@ -563,7 +597,7 @@ def main(args):
         epoch_correct = 0
         epoch_wrong = 0
         epoch_recalls = []
-        
+
         for idx, item in enumerate(data):
             global_idx = idx + epoch * len_data
             if global_idx < start_idx:
@@ -620,7 +654,7 @@ def main(args):
                 if args.answer_type == 'closed':
                     logging.info(f"  Epoch stats - Correct: {epoch_correct}, Wrong: {epoch_wrong}, Epoch accuracy: {(epoch_correct/(epoch_correct+epoch_wrong))*100:.2f}%")
                 else:
-                    logging.info(f"  Sample recalls: {recalls}, Average recall: {avg_recall:.4f}")
+                    logging.info(f"  Sample recalls: {recalls}, Average recall: {avg_recall:.4f}, Epoch average recall so far: {(sum(epoch_recalls)/(len(epoch_recalls)*args.grpo_n)):.4f}")
                 
                 logging.info(f"  KB size: {len(Agent.knowledge_base.knowledge_items)}")
 
@@ -698,15 +732,19 @@ def main(args):
     logging.info(f"KB versions saved to: {Agent.kb_version_dir}")
     logging.info("=" * 80)
 
+    # 删除检查点文件
+    if os.path.exists(Agent.checkpoint_file):
+        os.remove(Agent.checkpoint_file)
+        logging.info(f"Checkpoint file deleted: {Agent.checkpoint_file}")
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training-free MedLLM - Tag-based Knowledge Base")
-    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen3-vl-flash")
-    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen-max", help="Model for answer evaluation")
-    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen-vl-plus", help="Model for retrieval classification")
+    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen2.5-vl-instruct")
+    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen2.5-vl-instruct", help="Model for answer evaluation")
+    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen2.5-vl-instruct", help="Model for retrieval classification")
     parser.add_argument("--infer_mode", type=str, default="api", choices=["local", "api"], help="Inference mode")
-    parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
     parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
 
@@ -718,14 +756,14 @@ if __name__ == "__main__":
 
     parser.add_argument("--kb_save_steps", type=int, default=100, help="Save KB version every N steps (0 to disable)")
     parser.add_argument("--epochs", "--e", type=int, default=1)
-    parser.add_argument("--grpo_n", type=int, default=3)
+    parser.add_argument("--grpo_n", type=int, default=5)
     parser.add_argument("--rollout_top_p", type=float, default=0.95)
-    parser.add_argument("--rollout_temperature", type=float, default=0.7)
+    parser.add_argument("--rollout_temperature", type=float, default=0.9)
+    parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.0, help="Repetition penalty")
     parser.add_argument("--rollout_max_tokens", type=int, default=5120)
-    parser.add_argument("--rollout_do_sample", action='store_true', default=True, help="Whether to use sampling in rollouts")
 
-    parser.add_argument("--reranker_threshold", type=float, default=0.75, help="Reranker relevance threshold")
-    parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
+    parser.add_argument("--reranker_threshold", type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--top_k_knowledges", type=int, default=1000, help="Top K knowledges to retrieve")
 
     args = parser.parse_args()
     main(args)

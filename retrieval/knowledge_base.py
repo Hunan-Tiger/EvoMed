@@ -61,11 +61,11 @@ IMAGE_MODALITY_TAGS = {
     "xray": 0,
     "ct": 1,
     "mri": 2,
-    # "ultrasound": 3,
-    # "pet": 4,
+    "ultrasound": 3,
+    "pet": 4,
     # "endoscopy": 5,
     # "fundoscopy": 6,
-    # "pathology": 7,
+    "pathology": 5,
 }
 
 ORGAN_TISSUE_TAGS = {
@@ -101,6 +101,10 @@ ORGAN_TISSUE_TAGS = {
     "spine": 22,
     "bone": 23,
     "joint": 24,
+
+    # 病理
+    'lymph_node': 25,
+    'cell_tissue': 26,
 }
 
 
@@ -346,7 +350,7 @@ class TagKnowledgeBase:
         根据三元ID检索知识
         
         检索策略：
-        1. 精确匹配三元ID
+        1. 精确匹配三元ID (移除)
         2. 如果不足，尝试部分匹配（优先级：三个都匹配 > 两个匹配 > 一个匹配）
         3. 如果仍不足，返回当前结果（可能为空）
         
@@ -363,11 +367,12 @@ class TagKnowledgeBase:
             return []
         
         # 1. 精确匹配三元ID
-        triple_id = make_triple_id(question_type_ids, modality_ids, organ_ids)
-        exact_match_ids = self.triple_index.get(triple_id, [])
+        # triple_id = make_triple_id(question_type_ids, modality_ids, organ_ids)
+        # exact_match_ids = self.triple_index.get(triple_id, [])
         
-        if len(exact_match_ids)>0:
-            return self._get_knowledge_by_ids(exact_match_ids[:])
+        # if len(exact_match_ids)>0:
+        #     return self._get_knowledge_by_ids(exact_match_ids[:])
+        # 取消精确匹配，改为三级匹配
         
         # 2. 获取各索引的知识ID集合
         qt_ids_set = set()
@@ -387,8 +392,9 @@ class TagKnowledgeBase:
         if qt_ids_set and mod_ids_set and org_ids_set:
             three_match = qt_ids_set & mod_ids_set & org_ids_set
         
-        combined = list(set(exact_match_ids) | three_match)
-        return self._get_knowledge_by_ids(combined[:])
+        # combined = list(set(exact_match_ids) | three_match)
+        # return self._get_knowledge_by_ids(combined[:])
+        return self._get_knowledge_by_ids(list(three_match)[:])
         
         
         # # 4. 两级匹配

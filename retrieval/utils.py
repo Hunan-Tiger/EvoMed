@@ -12,7 +12,7 @@ from retrieval.knowledge_base import (
     ID_TO_MODALITY,
     ID_TO_ORGAN
 )
-from utils.utils import inference_chat_api_vllm
+from utils.utils import inference_chat_api_vllm, inference_chat_local
 
 # ==================== 分类 Prompt ====================
 
@@ -75,63 +75,38 @@ def get_classification_prompt(
 
 
 # ==================== 答案评估 Prompt ====================
-EVALUATION_SYSTEM_PROMPT = """You are a Medical Logic Auditor. Your task is to evaluate the diagnostic reasoning of a Vision-Language Model (VLM).
+EVALUATION_SYSTEM_PROMPT = """You are a Text-Based Medical Logic Auditor. You evaluate the diagnostic reasoning of a Vision-Language Model (VLM) based on text descriptions alone.
 
-**Context:**
-- You have access to: the Question, the Ground Truth (GT) answer, and the VLM's complete response (including <Visual_Findings>, <Knowledge_Check>, <Reasoning>, and <Answer>)
+**Evaluation Protocol:**
 
-**Evaluation Logic:**
+**Step 1: Strict Answer Matching**
+- **CORRECT**: the VLM's full response EXACTLY matches the ground truth answer.
+- **WRONG**: any deviation from the ground truth answer, including partial correctness or ambiguity.
 
-**Step 1: Answer Correctness Assessment**
-Compare the VLM's response with the Ground Truth:
-- **CORRECT**: The VLM's output matches the GT exactly in meaning
-- **WRONG**: The answer differs from GT in any way (missing information, extra information, or incorrect information)
-
-**Step 2: Error Type Classification (Only if WRONG)**
-If the answer is wrong, identify the root cause:
-
-1. **visual_perception_error**: 
-   - The VLM's <Visual_Findings> fundamentally contradict the GT
-   - Example: VLM describes "clear lungs" but GT indicates "pneumonia with consolidation"
-   - The error originates from incorrect visual interpretation
-   - Erroneously recognized anatomical structures or imaging modalities (e.g., misclassifying a shoulder MRI as an ankle MRI).
-
-2. **reasoning_logic_error**:
-   - The VLM's <Visual_Findings> align with GT (correct observations)
-   - But the <Reasoning> process leads to wrong conclusion
-   - Example: Correctly identifies "pulmonary opacity" but misdiagnoses as "tuberculosis" instead of "pneumonia"
-   - The error originates from flawed logical inference
-
-3. **knowledge_deficiency**:
-   - The VLM lacks necessary medical knowledge to interpret findings
-   - Or misapplies/misunderstands the provided knowledge
-   - Example: Doesn't know that "ground-glass opacity + fever = likely COVID-19"
+**Step 2: Check for Logic/Knowledge Errors (Only if Answer is Wrong)**
+- Only if the status is "wrong", analyze why.
+- Identify if the error is due to:
+    a) Reasoning Logic Error: The VLM's reasoning process is flawed, even if the visual description is accurate.
+    b) Knowledge Deficiency: The VLM lacks necessary medical knowledge to arrive at the correct answer, despite accurate perception and reasoning.
 
 **Output Format:**
-Return ONLY a valid JSON object (no additional text):
+Return ONLY a valid JSON object:
 {
   "status": "correct" | "wrong",
-  "error_type": "none" | "visual_perception_error" | "reasoning_logic_error" | "knowledge_deficiency",
-  "critique": "Concise explanation (1-2 sentences) of why the VLM succeeded or failed, referencing specific parts of the VLM's output."
+  "error_type": "none" | "reasoning_logic_error" | "knowledge_deficiency",
+  "critique": "Concise explanation. Do not hallucinate ground truth details not provided in the input text."
 }
-
-**Important Rules:**
-- If status is "correct", error_type must be "none"
-- If status is "wrong", error_type must be one of the three error types
-- Focus your critique on the most critical failure point
-- Be objective and evidence-based in your assessment
 """
 
 
 
 def get_evaluation_prompt(question: str, response: str, ground_truth: str) -> str:
     """生成答案评估 prompt"""
-    prompt = f"""**Question:**
-{question}
-**Ground Truth:**
-{ground_truth}
-**VLM Response:**
-{response}
+    prompt = f"""**Question:** {question}
+
+**Ground Truth:** {ground_truth}
+
+**VLM Response:** {response}
 """
     return prompt
 
@@ -355,7 +330,6 @@ def create_evaluator_inference_func(global_args=None):
             self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
             self.rollout_top_p = 0.01
-            self.rollout_do_sample = False
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它
@@ -364,7 +338,12 @@ def create_evaluator_inference_func(global_args=None):
     args = EvalArgs()
     
     def inference_func(chat):
-        return inference_chat_api_vllm(chat, args)
+        if global_args.evaluator_model == 'qwen2.5-vl-instruct':
+            # 使用学校的72b做test judger或者自己做critic model
+            return inference_chat_api_vllm(chat, args)
+        else:
+            # 7b使用自己做critic model
+            return inference_chat_local(chat, args)
     
     return inference_func
 
@@ -384,7 +363,6 @@ def create_classifier_inference_func(global_args=None):
             self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
             self.rollout_top_p = 0.01
-            self.rollout_do_sample = False
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它
@@ -394,6 +372,11 @@ def create_classifier_inference_func(global_args=None):
     args = ClassifyArgs()
     
     def inference_func(chat):
-        return inference_chat_api_vllm(chat, args)
+        if global_args.classifier_model == 'qwen2.5-vl-instruct':
+            # 使用学校的72b做test judger或者自己做retrival model
+            return inference_chat_api_vllm(chat, args)
+        else:
+            # 7b使用自己做retrival model
+            return inference_chat_local(chat, args)
     
     return inference_func

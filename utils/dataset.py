@@ -178,9 +178,10 @@ from utils.rewards import extract_hash_answer
 
 
 # ====================== Dataset Processing ====================
-def get_vqarad(truncate=None, split='train'):
+def get_vqarad(truncate=None, split='train', answer_type='closed', seed=42, **kwargs):
+    random.seed(seed)
 
-    data = load_dataset(f'datasets/vqa-rad', split=split, trust_remote_code=True)
+    data = load_dataset(f'datasets/vqa-rad', split=split)
 
     logging.info(f"Dataset loaded from datasets/vqa-rad, split={split}")
     logging.info(f"Total samples in dataset: {len(data)}")
@@ -192,7 +193,11 @@ def get_vqarad(truncate=None, split='train'):
             question_sample += '?'
 
         answer_sample = item['answer']
-        if answer_sample.lower() not in ['yes', 'no']:
+
+        # # 先只用closed-set QA
+        if answer_type == 'closed' and answer_sample.lower() not in ['yes', 'no']:
+            continue
+        if answer_type == 'open' and answer_sample.lower() in ['yes', 'no']:
             continue
         img_pil = item['image']# .resize((512, 512)) 
         img_path = item.get('img_path', f"image_{i}.png")
@@ -209,8 +214,7 @@ def get_vqarad(truncate=None, split='train'):
                     'answer':answer_sample.strip(),
                 })
 
-    # if split == 'train':
-    #     random.shuffle(dataset)
+    random.shuffle(dataset)
 
     logging.info(f"Filtered dataset size after processing: {len(dataset)}")
     if truncate is not None and truncate > 0 and truncate < len(dataset):
@@ -221,7 +225,7 @@ def get_vqarad(truncate=None, split='train'):
 
 
 
-def get_slake(truncate=None, split='train', answer_type='closed', content_type='all', seed=42, preserve_distribution=False):
+def get_slake(truncate=None, split='train', answer_type='closed', content_type='all', seed=42):
     random.seed(seed)
 
     data = load_from_disk("datasets/slake")[split]
@@ -283,40 +287,9 @@ def get_slake(truncate=None, split='train', answer_type='closed', content_type='
 
     logging.info(f"Filtered dataset size after processing: {len(dataset)}")
 
-   # 如果需要，截断数据集
-    if truncate is not None and truncate > 0 and truncate < len(dataset):
-        if preserve_distribution:
-            logging.info(f"Truncating to {truncate} samples while preserving content_type distribution.")
-            
-            # 1. 按 content_type 分组
-            content_groups = {}
-            for item in dataset:
-                ct = item['content_type']
-                if ct not in content_groups:
-                    content_groups[ct] = []
-                content_groups[ct].append(item)
-            
-            # 2. 根据原始分布计算每个组应抽取的样本数
-            final_dataset = []
-            total_original_count = len(dataset)
-            for ct, items in content_groups.items():
-                group_proportion = len(items) / total_original_count
-                num_to_sample = round(truncate * group_proportion)
-                
-                random.shuffle(items)
-                sampled_items = items[:num_to_sample]
-                final_dataset.extend(sampled_items)
-                logging.info(f"Content type '{ct}': selected {len(sampled_items)} samples out of {len(items)} based on distribution.")
-            
-            dataset = final_dataset
-            # 最终数据集可能由于四舍五入不完全等于 truncate 值，再次随机打乱
-            random.shuffle(dataset)
-
-        else:
-            # 原始的简单随机截断
-            logging.info(f"Truncating to {truncate} samples with simple random sampling.")
-            random.shuffle(dataset)
-            dataset = dataset[:truncate]
+    logging.info(f"Truncating to {truncate} samples with simple random sampling.")
+    random.shuffle(dataset)
+    dataset = dataset[:truncate]
 
     # 统计最终数据集组成
     open_count = sum(1 for d in dataset if d['answer_type'] == 'open')
@@ -329,9 +302,56 @@ def get_slake(truncate=None, split='train', answer_type='closed', content_type='
     logging.info(f"Final dataset size: {len(dataset)} samples")
     logging.info(f"Answer type distribution: {open_count} open, {closed_count} closed")
     logging.info(f"Content type distribution: {content_dist}")
-    if split == 'test':
-        dataset = [dataset[2]]
+
     return dataset
+
+
+def get_pathvqa(truncate=None, split='train', answer_type='closed', seed=42, **kwargs):
+    random.seed(seed)
+
+    data = load_dataset('datasets/pathvqa', split=split)
+    logging.info(f"Dataset loaded from datasets/pathvqa, split={split}")
+    logging.info(f"Total samples in dataset: {len(data)}")
+    logging.info(f"data[0]: {data[0]}")
+
+    dataset = []
+    for i, item in enumerate(data):
+        question_sample = item['problem']
+        question_sample = question_sample.replace('<image>\n', '')
+        if question_sample[-1] != '?':
+            question_sample += '?'
+
+        answer_sample = item['answer']
+
+        if answer_type == 'closed' and answer_sample.lower() not in ['yes', 'no']:
+            continue
+        if answer_type == 'open' and answer_sample.lower() in ['yes', 'no']:
+            continue
+
+        img_pil = item['images']  # .resize((512, 512)) 
+        img_path = item.get('img_path', f"image_{i}.png")
+
+        dataset.append({
+                'prompt': [
+                        {'role': 'user', 'content': [
+                            {"type": "image", "image": img_pil},
+                            {"type": "text", "text": question_sample.strip()},
+                        ]}
+                    ],
+                    'img_id': img_path,
+                    'qid': item.get('qid', f'pathvqa_{i}'),
+                    'answer':answer_sample.strip(),
+                })
+
+    random.shuffle(dataset)
+
+    logging.info(f"Filtered dataset size after processing: {len(dataset)}")
+    if truncate is not None and truncate > 0 and truncate < len(dataset):
+        dataset = dataset[:truncate]
+        
+    logging.info(f"Dataset truncated to first {len(dataset)} samples")
+    return dataset
+
 
 
 def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
@@ -416,6 +436,7 @@ def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
                 })
     logging.info(f"Filtered dataset size after processing: {len(dataset)}")
     random.shuffle(dataset)
+
     if truncate is not None and truncate > 0 and truncate < len(dataset):
         dataset = dataset[:truncate]
         logging.info(f"Dataset truncated to first {len(dataset)} samples")

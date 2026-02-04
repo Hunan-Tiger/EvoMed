@@ -8,14 +8,13 @@ import pickle
 import logging
 import sys
 import numpy as np
-from utils.prompt import query_system_prompt, query_prompt
+from utils.prompt import query_prompt, query_system_prompt
 from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_evaluator_inference_func, create_classifier_inference_func
 from utils.utils import (
-    inference_chat_local, 
-    inference_chat_api, 
-    get_cur_time, 
+    inference_chat_local,
+    inference_chat_api,
+    get_cur_time,
     extract_answer, 
-    model_loader,
     API_KEY_list,
     parse_tag,
     inference_chat_api_vllm
@@ -29,6 +28,18 @@ from retrieval.knowledge_base import (
     ID_TO_ORGAN
 )
 from retrieval.Reranker import MedicalVisualHyDE
+
+
+#
+# query_system_prompt = rf'''You are an expert Medical AI Assistant. Your task is to analyze medical images and answer clinical questions.
+# You have access to an external Knowledge Base (if any) to assist in your diagnosis.
+
+# Output format:
+# <Reasoning> Your step-by-step diagnostic reasoning process. </Reasoning>
+# <Answer> yes/no </Answer>
+
+# Note: Use the knowledge as a reference, but prioritize the visual evidence in the medical image.
+# '''
 
 
 class LLM():
@@ -82,12 +93,10 @@ class LLM():
         # 4. 加载推理模型 (仅在 local 模式下)
         if self.args.infer_mode != "api":
             logging.info(f"Loading local model: {self.model_name_or_path}")
-            self.model, self.tokenizer = model_loader(name_or_path=self.model_name_or_path, args=self.args)
-            logging.info("Local model loaded successfully.")
         else:
             logging.info(f"Using API mode with model: {self.model_name_or_path}")
         
-        # 5. 仅在 give_knowledges=true 时初始化知识库和分类器
+        # 5. 仅在 give_knowledges=true 时初始化知识库
         if self.args.give_knowledges.lower() == "true":
             # 如果你要指定特定路径，可以在这里修改
             self.kb_path = self.args.kb_path
@@ -123,7 +132,7 @@ class LLM():
         if self.args.infer_mode == "api":
             return inference_chat_api_vllm(chat, self.args)
         else:
-            return inference_chat_local(self.model, self.tokenizer, chat, self.args)
+            return inference_chat_local(chat, self.args)
     
 
     def save_checkpoint(self, idx, all_metrics, failed_indices):
@@ -184,9 +193,9 @@ class LLM():
         # 1. 使用 VLM 进行分类，获取三元ID
         logging.info("[STEP 1] Classification")
         classification_start = time.time()
-        (qt_ids, mod_ids, org_ids, rollouts['visual_findings']), classify_tokens = self.classifier.classify(question, query_img)
         # 仅在 give_knowledges=true 时进行知识检索
         if self.args.give_knowledges.lower() == "true":
+            (qt_ids, mod_ids, org_ids, rollouts['visual_findings']), classify_tokens = self.classifier.classify(question, query_img)
             if (self.knowledge_base is not None 
                 and len(self.knowledge_base.knowledge_items) > 0
                 and self.classifier is not None):
@@ -235,8 +244,6 @@ class LLM():
                         organ_ids=org_ids,
                     )
                     
-                    retrieval_time = time.time() - retrieval_start
-                    
                     # 格式化知识
                     self.current_rerank_knowledge = self.reranker.rerank(
                         question,
@@ -256,7 +263,8 @@ class LLM():
                         self.formatted_special_knowledges = "\n".join(formatted_items)
                     else:
                         logging.info("  No relevant knowledge retrieved.")
-                    
+
+                    retrieval_time = time.time() - retrieval_start
                     logging.info(f"  Retrieval time: {retrieval_time:.4f}s")
                     rollouts['retrieved_knowledge_count'] = len(self.current_rerank_knowledge)
             else:
@@ -264,17 +272,38 @@ class LLM():
                 rollouts['retrieved_knowledge_count'] = 0
         else:
             # give_knowledges=false，跳过知识检索
-            logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
+            # logging.info(f"  <Visual Findings>: {rollouts['visual_findings']}")
             logging.info("  Knowledge retrieval skipped (give_knowledges=false).")
             rollouts['retrieved_knowledge_count'] = 0
 
        # 构建 chat
-        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges, rollouts['visual_findings'])
+        prompt = query_prompt(rollouts['question'], self.formatted_special_knowledges)
         chat = []
         chat.append({"role": "system", "content": query_system_prompt})
         chat.append({
             'role': 'user',
             'content': [
+                {"type": "image", "image": rollouts['image']},
+                {"type": "text", "text": prompt},
+            ]
+        })
+
+        if self.args.model_name_or_path == 'Qwen2.5-VL-7B-Instruct':
+            instruction_text = rf'''You are an expert Medical AI Assistant. Your task is to analyze medical images and answer clinical questions.
+Analyze the medical image and the provided knowledge (if any) to answer the question.
+
+Output format:
+<Reasoning> Your step-by-step diagnostic reasoning process. </Reasoning>
+<Answer> Yes. or No. or option (e.g., A, B, C, D) or organ name. etc. </Answer>
+
+Note: Use the knowledge as a reference, but prioritize the visual evidence in the medical image.
+
+'''
+            chat = []
+            chat.append({
+            'role': 'user',
+            'content': [
+                {"type": "text", "text": instruction_text},
                 {"type": "image", "image": rollouts['image']},
                 {"type": "text", "text": prompt},
             ]
@@ -293,15 +322,14 @@ class LLM():
             self.total_tokens_consumed += usage.total_tokens
 
         # 解析 XML 标签内容
-        # rollouts['visual_findings'] = parse_tag(response, "Visual_Findings")
-        rollouts['knowledge_check'] = parse_tag(response, "Knowledge_Check")
         rollouts['reasoning'] = parse_tag(response, "Reasoning")
         rollouts['predicted_answer'] = parse_tag(response, "Answer")
-        rollouts['trajectory'] = f"<Visual_Findings>{rollouts['visual_findings']}</Visual_Findings>\n" + response
+        rollouts['trajectory'] = response
         logging.info(f"  Full Response: {rollouts['trajectory']}")
 
-        # 使用评估器评估答案
+        # 使用Test_Judger评估答案
         eval_result, eval_tokens = self.evaluator.evaluate(
+            rollouts['question'],
             response,
             rollouts['answer']
         )
@@ -337,6 +365,8 @@ def main(args):
         from utils.dataset import get_vqarad as process_dataset
     elif args.exp_name == "omni-rad-closed":
         from utils.dataset import get_omni_rad_closed as process_dataset
+    elif args.exp_name == "pathvqa":
+        from utils.dataset import get_pathvqa as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
@@ -355,7 +385,8 @@ def main(args):
     logging.info(f"Knowledge Base Path: {args.kb_path if args.give_knowledges.lower() == 'true' else 'N/A'}")
     logging.info(f"GRPO N: {args.grpo_n}")
     logging.info(f"Temperature: {args.rollout_temperature}")
-    logging.info(f"Repetition Penalty: {args.rollout_repetition_penalty}")
+    logging.info(f"Reranker Theshold: {args.reranker_threshold}")
+    logging.info(f"Top-K Knowledges: {args.top_k_knowledges}")
     logging.info(f"Evaluator Model: {args.evaluator_model}")
     logging.info("=" * 80 + "\n")
     
@@ -553,9 +584,9 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training-free MedLLM - Tag-based Knowledge Base")
-    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen3-vl-flash")
-    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen-max", help="Model for answer evaluation")
-    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen-vl-plus", help="Model for retrieval classification")
+    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen2.5-vl-instruct")
+    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen2.5-vl-instruct", help="Model for answer evaluation")
+    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen2.5-vl-instruct", help="Model for retrieval classification")
     parser.add_argument("--infer_mode", type=str, default="api", choices=["local", "api"], help="Inference mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
@@ -572,15 +603,13 @@ if __name__ == "__main__":
 
     parser.add_argument("--grpo_n", type=int, default=1, help="Number of rollouts per sample")
     parser.add_argument("--rollout_top_p", type=float, default=0.01, help="Top-p sampling")
-    parser.add_argument("--rollout_top_k", type=int, default=1, help="Top-k sampling")
-    parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.1, help="Repetition penalty")
-    parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=6, help="No repeat ngram size")
+    parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.0, help="Repetition penalty")
+    parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=0, help="No repeat ngram size")
     parser.add_argument("--rollout_temperature", '--temp', type=float, default=0, help="Temperature")
     parser.add_argument("--rollout_max_tokens", type=int, default=5120, help="Max tokens")
-    parser.add_argument("--rollout_do_sample", action='store_true', default=False, help="Whether to use sampling in rollouts")
-
-    parser.add_argument("--reranker_threshold", type=float, default=0.75, help="Reranker relevance threshold")
-    parser.add_argument("--top_k_knowledges", type=int, default=10, help="Top K knowledges to retrieve")
+ 
+    parser.add_argument("--reranker_threshold", '--ts', type=float, default=0.8, help="Reranker relevance threshold")
+    parser.add_argument("--top_k_knowledges", '--topk', type=int, default=1000, help="Top K knowledges to retrieve")
     
     parser.add_argument("--give_knowledges", "--gk", type=str, default="true", help="Whether to provide knowledge")
     

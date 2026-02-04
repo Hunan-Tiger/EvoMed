@@ -1,14 +1,3 @@
-import torch
-from transformers import (
-AutoModelForCausalLM, 
-AutoTokenizer, 
-Qwen2_5_VLForConditionalGeneration, 
-AutoProcessor,
-BitsAndBytesConfig,
-GenerationConfig
-)
-from qwen_vl_utils import process_vision_info
-
 import requests
 import re
 import copy
@@ -31,82 +20,150 @@ def image_to_base64(image):
             return base64.standard_b64encode(f.read()).decode("utf-8")
     elif isinstance(image, Image.Image):
         # 如果是 PIL Image
+        # 根据是否有透明通道选择转换模式
+        if image.mode == 'RGBA' or (image.mode == 'P' and 'transparency' in image.info):
+            # 保留透明度
+            image = image.convert('RGBA')
+        elif image.mode not in ('RGB', 'L'):
+            # 转换为 RGB（无透明度）
+            image = image.convert('RGB')
+        
         buffered = BytesIO()
         image.save(buffered, format="PNG")
         return base64.standard_b64encode(buffered.getvalue()).decode("utf-8")
+    elif isinstance(image, list):
+        # 如果是图像列表，递归处理每个图像并返回列表
+        img_list = [image_to_base64(img) for img in image]
+        if len(img_list) == 1:
+            return img_list[0]
+        return img_list
     else:
         raise ValueError(f"Unsupported image type: {type(image)}")
 
 
-
-def model_loader(name_or_path, compute_dtype=torch.bfloat16, args=None):
-
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-        name_or_path,
-        device_map="auto", 
-        trust_remote_code=True,
-        dtype=compute_dtype,
-        attn_implementation="flash_attention_2",
-    ).eval()
-
-    tokenizer = AutoProcessor.from_pretrained(
-        name_or_path,
-        use_fast=False,
-        trust_remote_code=True,
-    )
-
-    return model, tokenizer
-
-
-
-def inference_chat_local(model, tokenizer, messages, args):
-
-    input_text = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True
-    )
+def inference_chat_local(chat, args, api_url="http://localhost:8000/v1", max_retries=10):
+    """
+    """
     
-    # 处理视觉信息
-    image_inputs, video_inputs = process_vision_info(messages)
-    
-    # 分词
-    inputs = tokenizer(
-        text=[input_text],
-        images=image_inputs,
-        videos=video_inputs,
-        padding=True,
-        add_special_tokens=False,
-        return_tensors="pt",
-    ).to(model.device)
-    
-    # 生成
-    generated_ids = model.generate(
-        **inputs,
-        max_new_tokens=args.rollout_max_tokens,
-        temperature=args.rollout_temperature,
-        top_p=args.rollout_top_p,
-        repetition_penalty=1.1,          # 增加重复惩罚
-        # no_repeat_ngram_size=3,          # 禁止重复 3-gram
-        do_sample=True,
-        pad_token_id=tokenizer.tokenizer.pad_token_id,
-        eos_token_id=tokenizer.tokenizer.eos_token_id,
-    )
-    
-    # 解码
-    generated_ids_trimmed = [
-        out_ids[len(in_ids):] 
-        for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    output_text = tokenizer.batch_decode(
-        generated_ids_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False
-    )[0]
+    # 1. 预处理 Messages，适配 vLLM/OpenAI 格式
+    # Qwen2.5-VL 在 vLLM 中接收的标准格式是 OpenAI Vision 格式
+    formatted_messages = []
+    for msg in chat:
+        if isinstance(msg.get("content"), list):
+            formatted_content = []
+            for item in msg["content"]:
+                if item.get("type") == "image":
+                    # 处理图像
+                    image = item.get("image")
+                    if image is not None:
+                        base64_image = image_to_base64(image)
+                        formatted_content.append({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/png;base64,{base64_image}"
+                            }
+                        })
+                elif item.get("type") == "image_url":
+                    formatted_content.append(item)
+                elif item.get("type") == "text":
+                    formatted_content.append({
+                        "type": "text",
+                        "text": item["text"]
+                    })
+            formatted_messages.append({
+                "role": msg["role"],
+                "content": formatted_content
+            })
+        else:
+            formatted_messages.append(msg)
 
-    return output_text
+    # 2. 构造 Payload
+    payload = {
+        "model": "Qwen/Qwen2.5-VL-7B-Instruct", # 必须与启动参数一致
+        "messages": formatted_messages,
+        "max_tokens": args.rollout_max_tokens,
+        "temperature": args.rollout_temperature,
+        "top_p": args.rollout_top_p,
+        "seed":  getattr(args, 'seed', None),
+        # vLLM 支持的额外参数
+        "top_k": getattr(args, 'rollout_top_k', -1),  # -1 表示禁用
+        "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
+        "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
+        "stop": getattr(args, 'stop_tokens', None),
+    }
 
-def inference_chat_api_vllm(chat, args, max_retries=5):
+    logging.info(f"--- Calling vLLM API with parameters ---")
+    logging.info(f"  url: {api_url}")
+    logging.info(f"  model: {payload.get('model')}")
+    logging.info(f"  max_tokens: {payload.get('max_tokens')}")
+    logging.info(f"  temperature: {payload.get('temperature')}")
+    logging.info(f"  top_p: {payload.get('top_p')}")
+    logging.info(f"  top_k: {payload.get('top_k')}")
+    logging.info(f"  repetition_penalty: {payload.get('repetition_penalty')}")
+    logging.info(f"  no_repeat_ngram_size: {payload.get('no_repeat_ngram_size')}")
+    logging.info(f"  seed: {payload.get('seed')}")
+    logging.info(f"----------------------------------------")
+
+    headers = {
+        "Content-Type": "application/json"
+    }
+
+    # 3. 发送请求
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(
+                f"{api_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=120.0
+            )
+            response.raise_for_status()
+            
+            result = response.json()
+            if result is None or "choices" not in result or len(result["choices"]) == 0:
+                logging.error(f"API response is invalid: {response.text}")
+                return "response_invalid", None
+            content = result["choices"][0]["message"]["content"]
+            
+            # 构建 usage 对象
+            usage_data = result.get("usage", {})
+            
+            class Usage:
+                def __init__(self, data):
+                    self.prompt_tokens = data.get("prompt_tokens", 0)
+                    self.completion_tokens = data.get("completion_tokens", 0)
+                    self.total_tokens = data.get("total_tokens", 0)
+            
+            usage = Usage(usage_data)
+            return content, usage
+        
+        except requests.exceptions.Timeout as e:
+            logging.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+        
+        except requests.exceptions.HTTPError as e:
+            if response.status_code == 429:  # Rate limit
+                logging.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}): {e}")
+                time.sleep(2 ** attempt)
+            else:
+                logging.error(f"HTTP error: {e}, Response: {response.text}")
+                raise
+        
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+            else:
+                raise
+
+    return "", None
+
+
+
+def inference_chat_api_vllm(chat, args, max_retries=10):
     """
     使用 requests 直接调用 vLLM 兼容的 API 端点，
     支持更多生成参数控制，适用于 Qwen2.5-VL 模型
@@ -137,7 +194,6 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
                             }
                         })
                 elif item.get("type") == "image_url":
-                    # 已经是 URL 格式
                     formatted_content.append(item)
                 elif item.get("type") == "text":
                     formatted_content.append({
@@ -150,16 +206,15 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
             })
         else:
             formatted_messages.append(msg)
-    
+
     # 构建请求体，包含所有生成参数
     payload = {
         "model": args.model_name_or_path,
         "messages": formatted_messages,
         "max_tokens": args.rollout_max_tokens,
-        "do_sample": args.rollout_do_sample,
         "temperature": args.rollout_temperature,
         "top_p": args.rollout_top_p,
-        "seed": args.seed,
+        "seed":  getattr(args, 'seed', None),
         # vLLM 支持的额外参数
         "top_k": getattr(args, 'rollout_top_k', -1),  # -1 表示禁用
         "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
@@ -170,13 +225,12 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
     }
     
     # 移除 None 值
-    payload = {k: v for k, v in payload.items() if v is not None}
+    # payload = {k: v for k, v in payload.items() if v is not None}
     
     logging.info(f"--- Calling vLLM API with parameters ---")
     logging.info(f"  url: {url}")
     logging.info(f"  model: {payload.get('model')}")
     logging.info(f"  max_tokens: {payload.get('max_tokens')}")
-    logging.info(f"  do_sample: {payload.get('do_sample')}")
     logging.info(f"  temperature: {payload.get('temperature')}")
     logging.info(f"  top_p: {payload.get('top_p')}")
     logging.info(f"  top_k: {payload.get('top_k')}")
@@ -196,6 +250,9 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
             response.raise_for_status()
             
             result = response.json()
+            if result is None or "choices" not in result or len(result["choices"]) == 0:
+                logging.error(f"API response is invalid: {response.text}")
+                return "response_invalid", None
             content = result["choices"][0]["message"]["content"]
             
             # 构建 usage 对象
@@ -209,14 +266,14 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
             
             usage = Usage(usage_data)
             return content, usage
-            
+        
         except requests.exceptions.Timeout as e:
             logging.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
             else:
                 raise
-                
+        
         except requests.exceptions.HTTPError as e:
             if response.status_code == 429:  # Rate limit
                 logging.warning(f"Rate limit hit (attempt {attempt + 1}/{max_retries}): {e}")
@@ -224,15 +281,15 @@ def inference_chat_api_vllm(chat, args, max_retries=5):
             else:
                 logging.error(f"HTTP error: {e}, Response: {response.text}")
                 raise
-                
+        
         except requests.exceptions.RequestException as e:
             logging.error(f"Request failed (attempt {attempt + 1}/{max_retries}): {e}")
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
             else:
                 raise
-    
-    return None, None
+
+    return "", None
 
 
 def inference_chat_api(messages, args, max_retries=5):
@@ -320,8 +377,7 @@ def inference_chat_api(messages, args, max_retries=5):
         try:
             # 将不支持的标准参数移入 extra_body
             extra_body = {
-                "do_sample": False,
-                "top_k": getattr(args, 'rollout_top_k', 1),
+                "top_k": getattr(args, 'rollout_top_k', -1),
                 "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
                 "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
             }
@@ -413,7 +469,7 @@ def parse_tag(text, tag):
     if match:
         return match.group(1).strip()
     else:
-        return text.split(f"<{tag}>")[-1].strip() if f"<{tag}>" in text else "PARSE_ERROR"
+        return text.split(f"<{tag}>")[-1].strip() if f"<{tag}>" in text else text.strip().splitlines()[-1]
 
 
 
@@ -499,11 +555,10 @@ class Test_Judger:
 
 **GRADING RULES:**
 
-1. **Multiple Choice:** Match by letter (A/B/C/D) or option text. Multi-select requires exact match.
-2. **Yes/No:** "Yes"="True"="Positive"="Present"; "No"="False"="Negative"="Absent".
-3. **Robustness:** Ignore case, punctuation, filler text (e.g., "The answer is A" → "A. Pneumonia", "A" -> "A. Pneumonia").
-
-**Note:** Grade as "correct" if the final answer matches GT, regardless of reasoning quality.
+1. **Single Choice:** Match by letter (A/B/C/D) or option text. single-select requires exact match, don't accept multi-select.
+2. **Multiple Choice:** All and only correct options must be selected, don't accept partial credit and any incorrect options. Order does not matter.
+3. **Yes/No:** "Yes"="True"="Positive"="Present"; "No"="False"="Negative"="Absent".
+4. **Robustness:** Ignore case, punctuation, filler text (e.g., "The answer is A" → "A. Pneumonia", "A" -> "A. Pneumonia").
 
 **OUTPUT (JSON only):**
 {"status": "correct" | "wrong", "reason": "Brief explanation."}
@@ -528,6 +583,7 @@ class Test_Judger:
     
     def evaluate(
         self, 
+        question: str,
         vlm_response: str, 
         ground_truth: str
     ):
@@ -545,7 +601,7 @@ class Test_Judger:
         extracted_pred = self._extract_answer(vlm_response)
         logging.info(f"Extracted Model Answer for Judging: {extracted_pred}")
 
-        prompt = f"**Ground Truth:** {ground_truth}\n**Model Answer:** {extracted_pred}"
+        prompt = f"**Question:** {question}\n\n**Ground Truth:** {ground_truth}\n\n**Model Answer:** {extracted_pred}"
         
         chat = [{"role": "system", "content": self.JUDGER_SYSTEM_PROMPT},
             {"role": "user", "content": prompt}]

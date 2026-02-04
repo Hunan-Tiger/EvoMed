@@ -16,6 +16,9 @@ class MedicalVisualHyDE:
         Output: Top-K Knowledge Items
         """
         candicate_knowledges = [item['knowledge'] for item in current_retrieved_knowledge]
+        logging.info(f"Reranker received {len(candicate_knowledges)} candidate knowledges:")
+        logging.info(candicate_knowledges)
+
         knowledge_id_map = {item['knowledge']: item['id'] for item in current_retrieved_knowledge}
         if candicate_knowledges == []:
             return []
@@ -40,12 +43,14 @@ class MedicalVisualHyDE:
         # 3. 过滤阈值并去重 (Filter and Deduplicate)
         final_knowledges = []
         seen_knowledge = set()
+        scores = []
 
         for doc, score in scored_candidates:
             if score > threshold:
                 if doc not in seen_knowledge:  # 关键：检查是否已存在
                     final_knowledges.append(doc)
                     seen_knowledge.add(doc)
+                    scores.append(score)
             
             # 4. 达到 Top-K 数量即停止
             if len(final_knowledges) >= top_k:
@@ -55,7 +60,7 @@ class MedicalVisualHyDE:
         
         # 重构 ID
         final_ids = [knowledge_id_map[doc] for doc in final_knowledges]
-        final_result = [{'id': id_, 'knowledge': doc} for id_, doc in zip(final_ids, final_knowledges)]
+        final_result = [{'id': id_, 'knowledge': doc, 'score': score.item()} for id_, doc, score in zip(final_ids, final_knowledges, scores)]
         logging.info(f"Top-{top_k} relevant knowledges: {final_result}")
 
         return final_result
