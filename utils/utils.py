@@ -654,12 +654,3 @@ class Test_Judger:
                 return {'result': 'wrong', 'reason': 'Parse failed, default to wrong'}
 
     
-
-
-API_KEY_list = {
-    'lijm': "sk-0e4ecba324df49bf80a831dd9bc67ba8",
-    'wujl': "sk-d41c52973bf549ab8e0011a58efe6ef9",
-    'songq': "sk-36d2e2eea6c84cc299b3e023f32cefcc",
-    'xiongda': "sk-6bba59784ecb4d21b408c76dabb8b60e",
-    'skd': '0f02bb4443b94ed0a68012e44f6f7efd'
-}
