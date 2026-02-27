@@ -12,7 +12,7 @@ import sys
 import pickle
 from retrieval.knowledge_base import TagKnowledgeBase, make_triple_id
 from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_evaluator_inference_func,create_classifier_inference_func
-from retrieval.Reranker import MedicalVisualHyDE
+from retrieval.Reranker import MedicalVisualAugmentation
 
 
 class LLM(): 
@@ -72,7 +72,7 @@ class LLM():
         self.formatted_special_knowledges = ""
         self.current_retrieved_knowledge_ids = []
 
-        self.reranker = MedicalVisualHyDE(device='cuda')
+        self.reranker = MedicalVisualAugmentation(device='cuda')
 
         # 加载推理模型
         if self.args.infer_mode != "api":

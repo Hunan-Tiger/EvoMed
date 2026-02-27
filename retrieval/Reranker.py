@@ -3,7 +3,7 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import logging
 
 
-class MedicalVisualHyDE:
+class MedicalVisualAugmentation:
     def __init__(self, rerank_model_path='BAAI/bge-reranker-v2-m3', device='cuda'):
         self.device = device
         self.reranker_model = AutoModelForSequenceClassification.from_pretrained(rerank_model_path).to(device).eval()
@@ -65,7 +65,7 @@ class MedicalVisualHyDE:
         return final_result
     
 if '__main__' == __name__:
-    reranker = MedicalVisualHyDE(device='cuda')
+    reranker = MedicalVisualAugmentation(device='cuda')
     question = "What is the diagnosis for the patient?"
     visual_findings = "The chest X-ray shows bilateral infiltrates."
     candicate_knowledges = [
