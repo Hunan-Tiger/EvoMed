@@ -2,4 +2,7 @@
 *.json
 *.pkl
 datasets/
-__pycache__/
+__pycache__
+draw_figs/
+checkpoints/
+knowledges/*
