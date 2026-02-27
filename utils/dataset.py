@@ -433,6 +433,7 @@ def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
                     'qid': item.get('question_id', i),
                     'answer':answer,
                     'content_type': item['question_type'].lower(),
+                    'modality_type': item['modality_type'].lower(),
                 })
     logging.info(f"Filtered dataset size after processing: {len(dataset)}")
     random.shuffle(dataset)
@@ -442,3 +443,74 @@ def get_omni_rad_closed(truncate=None, split='train', seed=42, **kwargs):
         logging.info(f"Dataset truncated to first {len(dataset)} samples")
     return dataset
     
+
+def get_omnimed_path(truncate=None, split='train', seed=42, **kwargs):
+    random.seed(seed)
+    
+    import json
+    if split == 'test':
+        with open(r'datasets/OmniMed-Path/pathology_test.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    else:
+        with open(r'datasets/OmniMed-Path/pathology_train.json', 'r', encoding='utf-8') as f:
+            data = json.load(f)
+
+    print(data[0])
+    dataset = []
+    for i, item in enumerate(data):
+        question_sample = item['question']
+        if question_sample[-1] != '?':
+            question_sample += '?'
+
+        answer_sample = item['gt_answer']
+        option_map = {
+            item.get('option_A'): 'A' if item.get('option_A') else None,
+            item.get('option_B'): 'B' if item.get('option_B') else None,
+            item.get('option_C'): 'C' if item.get('option_C') else None,
+            item.get('option_D'): 'D' if item.get('option_D') else None,
+        }
+        # 构建选项字符串，只包含存在的选项
+        options_parts = []
+        if item.get('option_A'):
+            options_parts.append(f"A. {item['option_A']}\n")
+        if item.get('option_B'):
+            options_parts.append(f"B. {item['option_B']}\n")
+        if item.get('option_C'):
+            options_parts.append(f"C. {item['option_C']}\n")
+        if item.get('option_D'):
+            options_parts.append(f"D. {item['option_D']}\n")
+
+        question_sample += f" Options:\n{''.join(options_parts)}Please answer with the correct single-letter choice."
+
+        if answer_sample not in option_map:
+            continue
+        answer_letter = option_map[answer_sample]
+        answer = answer_letter+'. '+answer_sample
+
+        img_path = os.path.join('datasets', item['image_path'])
+        try:
+            with Image.open(img_path) as img:
+                img_pil = img.copy()
+        except Exception as e:
+            print(f"Error opening or copying image {img_path}: {e}")
+
+        dataset.append({
+                'prompt': [
+                        {'role': 'user', 'content': [
+                            {"type": "image", "image": img_pil},
+                            {"type": "text", "text": question_sample.strip()},
+                        ]}
+                    ],
+                    'img_id': img_path,
+                    'qid': item.get('question_id', i),
+                    'answer':answer,
+                    'content_type': item['question_type'].lower(),
+                    'modality_type': item['modality_type'].lower(),
+                })
+    logging.info(f"Filtered dataset size after processing: {len(dataset)}")
+    random.shuffle(dataset)
+
+    if truncate is not None and truncate > 0 and truncate < len(dataset):
+        dataset = dataset[:truncate]
+        logging.info(f"Dataset truncated to first {len(dataset)} samples")
+    return dataset

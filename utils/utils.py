@@ -115,7 +115,7 @@ def inference_chat_local(chat, args, api_url="http://localhost:8000/v1", max_ret
                 f"{api_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=120.0
+                timeout=600.0
             )
             response.raise_for_status()
             
@@ -245,7 +245,7 @@ def inference_chat_api_vllm(chat, args, max_retries=10):
                 url,
                 headers=headers,
                 json=payload,
-                timeout=120.0
+                timeout=600.0
             )
             response.raise_for_status()
             

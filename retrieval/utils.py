@@ -325,11 +325,11 @@ def create_evaluator_inference_func(global_args=None):
         def __init__(self):
             self.model_name_or_path = global_args.evaluator_model
             # 将温度设为0以消除随机性，使输出尽可能固定
-            self.rollout_temperature = 0
+            self.rollout_temperature = 0.0
             self.rollout_max_tokens = 2048
-            self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
-            self.rollout_top_p = 0.01
+            self.rollout_top_p = 1.0
+            self.rollout_top_k=1
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它
@@ -347,22 +347,22 @@ def create_evaluator_inference_func(global_args=None):
     
     return inference_func
 
+
 def create_classifier_inference_func(global_args=None):
     """
     创建分类器的推理函数
     
     可以使用本地小模型或 API
     """
-    
     class ClassifyArgs:
         def __init__(self):
             self.model_name_or_path = global_args.classifier_model
             # 将温度设为0以消除随机性，使输出尽可能固定
             self.rollout_temperature = 0.0
             self.rollout_max_tokens = 2048
-            self.rollout_repetition_penalty=1.0
             # 设置较小的 top_p 也有助于减少随机性
-            self.rollout_top_p = 0.01
+            self.rollout_top_p = 1.0
+            self.rollout_top_k=1
             self.api_key = global_args.api_key if global_args is not None else None
             self.base_url = global_args.base_url if global_args is not None else None
             # 如果API支持seed，可以固定它

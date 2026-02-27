@@ -367,10 +367,12 @@ def main(args):
         from utils.dataset import get_omni_rad_closed as process_dataset
     elif args.exp_name == "pathvqa":
         from utils.dataset import get_pathvqa as process_dataset
+    elif args.exp_name == "omnimed-path":
+        from utils.dataset import get_omnimed_path as process_dataset
     else:
         raise ValueError(f"Unsupported experiment name: {args.exp_name}")
 
-    data = process_dataset(truncate=args.dataset_truncate, split=args.data_split, answer_type=args.answer_type, content_type=args.content_type, seed=args.seed)
+    data = process_dataset(truncate=args.dataset_truncate, split=args.data_split, answer_type=args.answer_type, content_type=args.content_type)
 
     logging.info("=" * 80)
     logging.info("TESTING START")
@@ -400,22 +402,22 @@ def main(args):
     start_idx = args.start_idx
     
     # 尝试加载检查点
-    checkpoint = Agent.load_checkpoint()
-    if checkpoint:
-        start_idx = checkpoint['idx'] + 1
-        all_metrics = checkpoint['all_metrics']
-        failed_indices = checkpoint['failed_indices']
-        Agent.rollouts_per_problem = checkpoint['rollouts']
-        Agent.total_tokens_consumed = checkpoint.get('total_tokens_consumed', 0)
+    # checkpoint = Agent.load_checkpoint()
+    # if checkpoint:
+    #     start_idx = checkpoint['idx'] + 1
+    #     all_metrics = checkpoint['all_metrics']
+    #     failed_indices = checkpoint['failed_indices']
+    #     Agent.rollouts_per_problem = checkpoint['rollouts']
+    #     Agent.total_tokens_consumed = checkpoint.get('total_tokens_consumed', 0)
 
-        logging.info(f"Resuming from checkpoint at index {start_idx}")
-        if args.answer_type != 'open':
-            total_correct = sum(1 for m in all_metrics if m == 'correct')
-            total_wrong = sum(1 for m in all_metrics if m == 'wrong')
-            logging.info(f"  Loaded stats - Correct: {total_correct}, Wrong: {total_wrong}, ACC: {total_correct/(total_correct+total_wrong+0.00001)*100:.2f}%")
-        else:
-            avg_recall = sum(all_metrics) / len(all_metrics) if all_metrics else 0
-            logging.info(f"  Loaded stats - Average Recall: {avg_recall:.4%} over {len(all_metrics)} samples")
+    #     logging.info(f"Resuming from checkpoint at index {start_idx}")
+    #     if args.answer_type != 'open':
+    #         total_correct = sum(1 for m in all_metrics if m == 'correct')
+    #         total_wrong = sum(1 for m in all_metrics if m == 'wrong')
+    #         logging.info(f"  Loaded stats - Correct: {total_correct}, Wrong: {total_wrong}, ACC: {total_correct/(total_correct+total_wrong+0.00001)*100:.2f}%")
+    #     else:
+    #         avg_recall = sum(all_metrics) / len(all_metrics) if all_metrics else 0
+    #         logging.info(f"  Loaded stats - Average Recall: {avg_recall:.4%} over {len(all_metrics)} samples")
 
 
 
@@ -602,7 +604,8 @@ if __name__ == "__main__":
     parser.add_argument("--kb_path", "--kb", type=str, default="knowledges/slake_tag_kb.pkl", help="Path to tag knowledge base")
 
     parser.add_argument("--grpo_n", type=int, default=1, help="Number of rollouts per sample")
-    parser.add_argument("--rollout_top_p", type=float, default=0.01, help="Top-p sampling")
+    parser.add_argument("--rollout_top_p", type=float, default=1.0, help="Top-p sampling")
+    # parser.add_argument("--rollout_top_k", type=float, default=1, help="Top-k sampling")
     parser.add_argument("--rollout_repetition_penalty", '--rp', type=float, default=1.0, help="Repetition penalty")
     parser.add_argument("--rollout_no_repeat_ngram_size", '--nrg', type=int, default=0, help="No repeat ngram size")
     parser.add_argument("--rollout_temperature", '--temp', type=float, default=0, help="Temperature")

@@ -17,7 +17,6 @@ class MedicalVisualHyDE:
         """
         candicate_knowledges = [item['knowledge'] for item in current_retrieved_knowledge]
         logging.info(f"Reranker received {len(candicate_knowledges)} candidate knowledges:")
-        logging.info(candicate_knowledges)
 
         knowledge_id_map = {item['knowledge']: item['id'] for item in current_retrieved_knowledge}
         if candicate_knowledges == []:
@@ -27,7 +26,7 @@ class MedicalVisualHyDE:
 
         with torch.no_grad():
             inputs = self.reranker_tokenizer(
-                pairs, padding=True, truncation=True, return_tensors="pt", max_length=512
+                pairs, padding=True, truncation=True, return_tensors="pt", max_length=2048
             ).to(self.device)
             scores = self.reranker_model(**inputs, return_dict=True).logits.view(-1,).float()
 
