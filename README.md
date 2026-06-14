@@ -2,7 +2,7 @@
 
 SE-MedVLM is a training-free medical VQA framework that builds and reuses a self-evolving medical knowledge base during visual question answering.
 
-The default model name for the open-source version is `Qwen3-VL-235B-A22B`, accessed through an OpenAI-compatible API.
+The default VLM for the open-source version is `Qwen3-VL-235B-A22B`, accessed through an OpenAI-compatible API. LLM-as-judge evaluation uses `Qwen3-Max`, also through API calls.
 
 ## Repository Layout
 
@@ -34,6 +34,8 @@ export OPENAI_API_KEY="your_api_key"
 
 `--ak env:VAR_NAME` reads a key from any environment variable. The aliases `skd` and `dashscope` resolve to `DASHSCOPE_API_KEY`; `openai` resolves to `OPENAI_API_KEY`.
 
+By default, `--model` and `--cm` use `Qwen3-VL-235B-A22B` for VQA and retrieval classification, while `--em` uses `Qwen3-Max` as the LLM-as-judge.
+
 ## Train Knowledge Base
 
 ```bash
@@ -44,7 +46,7 @@ python train.py \
   --ct all \
   --dt 300 \
   --model Qwen3-VL-235B-A22B \
-  --em Qwen3-VL-235B-A22B \
+  --em Qwen3-Max \
   --cm Qwen3-VL-235B-A22B \
   --ak env:DASHSCOPE_API_KEY \
   --bu https://dashscope.aliyuncs.com/compatible-mode/v1
@@ -68,7 +70,7 @@ python evaluate.py \
   --ct all \
   --dt 1000 \
   --model Qwen3-VL-235B-A22B \
-  --em Qwen3-VL-235B-A22B \
+  --em Qwen3-Max \
   --cm Qwen3-VL-235B-A22B \
   --ak env:DASHSCOPE_API_KEY \
   --bu https://dashscope.aliyuncs.com/compatible-mode/v1 \
