@@ -589,7 +589,7 @@ def main(args):
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Training-free MedLLM - Tag-based Knowledge Base")
+    parser = argparse.ArgumentParser(description="EvoMed - self-evolving medical knowledge base for VQA")
     parser.add_argument("--model_name_or_path", "--model", type=str, default="Qwen3-VL-235B-A22B")
     parser.add_argument("--evaluator_model", "--em", type=str, default="Qwen3-Max", help="LLM-as-judge model for answer evaluation")
     parser.add_argument("--classifier_model", "--cm", type=str, default="Qwen3-VL-235B-A22B", help="Model for retrieval classification")

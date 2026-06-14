@@ -1,6 +1,6 @@
-# SE-MedVLM
+# EvoMed
 
-SE-MedVLM is a training-free medical VQA framework that builds and reuses a self-evolving medical knowledge base during visual question answering.
+EvoMed is a training-free medical VQA framework that builds and reuses a self-evolving medical knowledge base during visual question answering.
 
 The default VLM for the open-source version is `Qwen3-VL-235B-A22B`, accessed through an OpenAI-compatible API. LLM-as-judge evaluation uses `Qwen3-Max`, also through API calls.
 
