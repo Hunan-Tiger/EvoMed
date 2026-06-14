@@ -6,7 +6,7 @@ import os
 import argparse
 from typing import List, Dict
 from utils.prompt import query_system_prompt, query_prompt, summarize_system_prompt, summarize_prompt, controller_system_prompt, controller_prompt
-from utils.utils import inference_chat_local, get_cur_time, extract_answer, inference_chat_api, API_KEY_list, parse_tag, inference_chat_api_vllm
+from utils.utils import inference_chat_local, get_cur_time, extract_answer, resolve_api_key, parse_tag, inference_chat_api_compatible
 import logging
 import sys
 import pickle
@@ -15,9 +15,14 @@ from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_eval
 from retrieval.Reranker import MedicalVisualAugmentation
 
 
+def use_user_only_prompt(model_name):
+    """Some local Qwen2.5-VL checkpoints follow user-only vision prompts better."""
+    return "qwen2.5-vl-7b" in model_name.lower()
+
+
 class LLM(): 
     def __init__(self, args): 
-        args.api_key = API_KEY_list.get(args.api_key)
+        args.api_key = resolve_api_key(args.api_key)
         self.model_name_or_path = args.model_name_or_path 
         self.args = args
         self.args_backup = args
@@ -107,7 +112,7 @@ class LLM():
             self.args.seed = None
 
         if self.args.infer_mode == "api":
-            return inference_chat_api_vllm(chat, self.args)
+            return inference_chat_api_compatible(chat, self.args)
         else:
             return inference_chat_local(chat, self.args)
 
@@ -269,9 +274,7 @@ class LLM():
                 {"type": "text", "text": prompt},
             ]
         })
-        # 在 vLLM 的推理中，虽然支持 System Role，但在处理多模态任务时，模型往往被大量的 Vision Tokens（图像信息）占据注意力，System Prompt 距离生成的 Token 位置太远，容易被“遗忘”
-        # Qwen2.5-VL-Instruct 经过了 RLHF（人类反馈强化学习），被训练成“高效回答问题”。如果它识别出这是一个选择题，它的训练本能是直接给选项。你需要用强硬的 Prompt 格式（如 XML 标签 <Reasoning>）并在 User Prompt 中重申，才能“对抗”这种本能。
-        if self.args.model_name_or_path == 'Qwen2.5-VL-7B-Instruct':
+        if use_user_only_prompt(self.args.model_name_or_path):
             instruction_text = rf'''You are an expert Medical AI Assistant. Your task is to analyze medical images and answer clinical questions.
 Analyze the medical image and the provided knowledge (if any) to answer the question.
 
@@ -743,11 +746,11 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training-free MedLLM - Tag-based Knowledge Base")
-    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen2.5-vl-instruct")
-    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen2.5-vl-instruct", help="Model for answer evaluation")
-    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen2.5-vl-instruct", help="Model for retrieval classification")
+    parser.add_argument("--model_name_or_path", "--model", type=str, default="Qwen3-VL-235B-A22B")
+    parser.add_argument("--evaluator_model", "--em", type=str, default="Qwen3-VL-235B-A22B", help="Model for answer evaluation")
+    parser.add_argument("--classifier_model", "--cm", type=str, default="Qwen3-VL-235B-A22B", help="Model for retrieval classification")
     parser.add_argument("--infer_mode", type=str, default="api", choices=["local", "api"], help="Inference mode")
-    parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
+    parser.add_argument("--api_key", "--ak", type=str, default="env:DASHSCOPE_API_KEY", help="API key, env:VAR_NAME, or alias for inference if using API mode")
     parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     

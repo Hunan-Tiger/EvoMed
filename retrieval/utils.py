@@ -12,7 +12,7 @@ from retrieval.knowledge_base import (
     ID_TO_MODALITY,
     ID_TO_ORGAN
 )
-from utils.utils import inference_chat_api_vllm, inference_chat_local
+from utils.utils import inference_chat_api_compatible, inference_chat_local
 
 # ==================== 分类 Prompt ====================
 
@@ -338,11 +338,11 @@ def create_evaluator_inference_func(global_args=None):
     args = EvalArgs()
     
     def inference_func(chat):
-        if global_args.evaluator_model == 'qwen2.5-vl-instruct':
-            # 使用学校的72b做test judger或者自己做critic model
-            return inference_chat_api_vllm(chat, args)
+        if getattr(global_args, "infer_mode", "api") == "api":
+            # Use the configured API model as the test judger or critic model.
+            return inference_chat_api_compatible(chat, args)
         else:
-            # 7b使用自己做critic model
+            # Use the configured local model as the critic model.
             return inference_chat_local(chat, args)
     
     return inference_func
@@ -372,11 +372,11 @@ def create_classifier_inference_func(global_args=None):
     args = ClassifyArgs()
     
     def inference_func(chat):
-        if global_args.classifier_model == 'qwen2.5-vl-instruct':
-            # 使用学校的72b做test judger或者自己做retrival model
-            return inference_chat_api_vllm(chat, args)
+        if getattr(global_args, "infer_mode", "api") == "api":
+            # Use the configured API model as the retrieval classifier.
+            return inference_chat_api_compatible(chat, args)
         else:
-            # 7b使用自己做retrival model
+            # Use the configured local model as the retrieval classifier.
             return inference_chat_local(chat, args)
     
     return inference_func

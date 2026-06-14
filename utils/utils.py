@@ -1,14 +1,11 @@
 import requests
 import re
-import copy
 import time
 import logging
-import json
-import random
 import base64
+import os
 from PIL import Image
 from io import BytesIO
-from openai import OpenAI, APIConnectionError, RateLimitError, APIError
 
 
 
@@ -45,8 +42,7 @@ def inference_chat_local(chat, args, api_url="http://localhost:8000/v1", max_ret
     """
     """
     
-    # 1. 预处理 Messages，适配 vLLM/OpenAI 格式
-    # Qwen2.5-VL 在 vLLM 中接收的标准格式是 OpenAI Vision 格式
+    # 1. 预处理 messages，适配 OpenAI-compatible vision chat 格式。
     formatted_messages = []
     for msg in chat:
         if isinstance(msg.get("content"), list):
@@ -79,20 +75,20 @@ def inference_chat_local(chat, args, api_url="http://localhost:8000/v1", max_ret
 
     # 2. 构造 Payload
     payload = {
-        "model": "Qwen/Qwen2.5-VL-7B-Instruct", # 必须与启动参数一致
+        "model": args.model_name_or_path,
         "messages": formatted_messages,
         "max_tokens": args.rollout_max_tokens,
         "temperature": args.rollout_temperature,
         "top_p": args.rollout_top_p,
         "seed":  getattr(args, 'seed', None),
-        # vLLM 支持的额外参数
+        # OpenAI-compatible generation parameters
         "top_k": getattr(args, 'rollout_top_k', -1),  # -1 表示禁用
         "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
         "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
         "stop": getattr(args, 'stop_tokens', None),
     }
 
-    logging.info(f"--- Calling vLLM API with parameters ---")
+    logging.info(f"--- Calling OpenAI-compatible chat API with parameters ---")
     logging.info(f"  url: {api_url}")
     logging.info(f"  model: {payload.get('model')}")
     logging.info(f"  max_tokens: {payload.get('max_tokens')}")
@@ -163,10 +159,9 @@ def inference_chat_local(chat, args, api_url="http://localhost:8000/v1", max_ret
 
 
 
-def inference_chat_api_vllm(chat, args, max_retries=10):
+def inference_chat_api_compatible(chat, args, max_retries=10):
     """
-    使用 requests 直接调用 vLLM 兼容的 API 端点，
-    支持更多生成参数控制，适用于 Qwen2.5-VL 模型
+    使用 requests 直接调用 OpenAI-compatible API endpoint。
     """
     url = args.base_url
     
@@ -215,7 +210,7 @@ def inference_chat_api_vllm(chat, args, max_retries=10):
         "temperature": args.rollout_temperature,
         "top_p": args.rollout_top_p,
         "seed":  getattr(args, 'seed', None),
-        # vLLM 支持的额外参数
+        # OpenAI-compatible generation parameters
         "top_k": getattr(args, 'rollout_top_k', -1),  # -1 表示禁用
         "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
         "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
@@ -227,7 +222,7 @@ def inference_chat_api_vllm(chat, args, max_retries=10):
     # 移除 None 值
     # payload = {k: v for k, v in payload.items() if v is not None}
     
-    logging.info(f"--- Calling vLLM API with parameters ---")
+    logging.info(f"--- Calling OpenAI-compatible chat API with parameters ---")
     logging.info(f"  url: {url}")
     logging.info(f"  model: {payload.get('model')}")
     logging.info(f"  max_tokens: {payload.get('max_tokens')}")
@@ -292,161 +287,6 @@ def inference_chat_api_vllm(chat, args, max_retries=10):
     return "", None
 
 
-def inference_chat_api(messages, args, max_retries=5):
-    """
-    使用 OpenAI 兼容 API 进行推理（适用于 Qwen2.5-VL）
-    
-    Args:
-        messages: 对话消息列表
-        args: 参数对象，包含 rollout_max_tokens, rollout_temperature, rollout_top_p
-    
-    Returns:
-        str: 模型生成的文本
-    """
-
-    if not args.api_key:
-        raise ValueError("API key is required. Set OPENAI_API_KEY environment variable or pass api_key parameter.")
-    
-    client = OpenAI(
-        api_key=args.api_key,
-        base_url=args.base_url,
-    )
-    
-    # 转换消息格式（处理图像）
-    formatted_messages = []
-    for msg in messages:
-        role = msg.get("role", "user")
-        content = msg.get("content", "")
-        
-        if isinstance(content, str):
-            # 纯文本消息
-            formatted_messages.append({"role": role, "content": content})
-        elif isinstance(content, list):
-            # 多模态消息（包含图像）
-            formatted_content = []
-            for item in content:
-                if item.get("type") == "text":
-                    formatted_content.append({
-                        "type": "text",
-                        "text": item.get("text", "")
-                    })
-                elif item.get("type") == "image":
-                    # 处理图像
-                    image = item.get("image")
-                    if image is not None:
-                        base64_image = image_to_base64(image)
-                        formatted_content.append({
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/png;base64,{base64_image}"
-                            }
-                        })
-                elif item.get("type") == "image_url":
-                    # 已经是 URL 格式
-                    formatted_content.append(item)
-            
-            formatted_messages.append({"role": role, "content": formatted_content})
-        else:
-            formatted_messages.append({"role": role, "content": str(content)})
-    
-    # 创建一个用于打印的消息副本，避免打印完整的 base64 字符串
-    # printable_messages = copy.deepcopy(formatted_messages)
-    # for msg in printable_messages:
-    #     if isinstance(msg.get("content"), list):
-    #         for item in msg["content"]:
-    #             if item.get("type") == "image_url" and item.get("image_url", {}).get("url", "").startswith("data:image"):
-    #                 # 找到原始 PIL Image 对象以获取尺寸
-    #                 original_image = None
-    #                 for original_msg in messages:
-    #                     if isinstance(original_msg.get("content"), list):
-    #                         for original_item in original_msg["content"]:
-    #                             if original_item.get("type") == "image" and isinstance(original_item.get("image"), Image.Image):
-    #                                 original_image = original_item.get("image")
-    #                                 break
-    #                     if original_image:
-    #                         break
-                    
-    #                 if original_image:
-    #                     item["image_url"]["url"] = f"<Image size: {original_image.size}>"
-    #                 else:
-    #                     item["image_url"]["url"] = "<Base64 Image Data>"
-    # print(f" ######### Calling API with messages: {printable_messages} ######### ")
-
-
-    for attempt in range(max_retries):
-        try:
-            # 将不支持的标准参数移入 extra_body
-            extra_body = {
-                "top_k": getattr(args, 'rollout_top_k', -1),
-                "repetition_penalty": getattr(args, 'rollout_repetition_penalty', 1.0),
-                "no_repeat_ngram_size": getattr(args, 'rollout_no_repeat_ngram_size', 0),
-            }
-            logging.info(f"--- Calling API with parameters ---")
-            logging.info(f"  model: {args.model_name_or_path}")
-            logging.info(f"  max_tokens: {args.rollout_max_tokens}")
-            logging.info(f"  temperature: {args.rollout_temperature}")
-            logging.info(f"  top_p: {args.rollout_top_p}")
-            logging.info(f"  extra_body: {extra_body}")
-            logging.info(f"  timeout: 120.0")
-            logging.info(f"  seed: {args.seed}")
-            logging.info(f"------------------------------------")
-
-            response = client.chat.completions.create(
-                model=args.model_name_or_path,
-                messages=formatted_messages,
-                max_tokens=args.rollout_max_tokens,
-                temperature=args.rollout_temperature,
-                top_p=args.rollout_top_p,
-                extra_body=extra_body,
-                timeout=120.0,
-                seed=args.seed,
-            )
-            if response and response.choices:
-                content = response.choices[0].message.content
-                usage = response.usage
-                return content, usage # 返回内容和 usage 对象
-            else:
-                logging.error(f"API response is invalid: {response}")
-                return "", None # 返回空值
-        
-        except APIConnectionError as e:
-            wait_time = min(2 ** attempt, 60)  # 指数退避,最大60秒
-            logging.warning(f"Connection error (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                logging.info(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                logging.error("Max retries reached. Failed to connect.")
-                raise
-        
-        except RateLimitError as e:
-            wait_time = 60  # 速率限制,等待更久
-            logging.warning(f"Rate limit error (attempt {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                logging.info(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                raise
-        
-        except APIError as e:
-            logging.error(f"API error: {e}")
-            if e.status_code >= 500:  # 服务器错误,可以重试
-                wait_time = min(2 ** attempt, 60)
-                if attempt < max_retries - 1:
-                    logging.info(f"Retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                else:
-                    raise
-            else:  # 客户端错误,不重试
-                raise
-
-        except Exception as e:
-            print(f"API Error: {e}")
-            raise
-
-    return None
-
-
 def get_cur_time():
     import time
     cur_time = time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())
@@ -470,40 +310,6 @@ def parse_tag(text, tag):
         return match.group(1).strip()
     else:
         return text.split(f"<{tag}>")[-1].strip() if f"<{tag}>" in text else text.strip().splitlines()[-1]
-
-
-
-def process_dataset(experiment_name_or_path, truncate=None, split='train', img_size=512):
-    data = load_dataset(f'{experiment_name_or_path}', split=split, trust_remote_code=True) # type: ignore
-    print(data[0])
-    dataset = []
-    for i, item in enumerate(data):
-        question_sample = item['question']
-        answer_sample = item['answer']
-
-        if answer_sample.lower() not in ['yes', 'no']: # filter single-choice
-            continue
-        
-        img_pil = item['image'].resize((img_size, img_size))  # reduce vRAM burden
-        
-        dataset.append({
-                'prompt': [
-                    {'role': 'user', 'content': [
-                        {"type": "image", "image": img_pil},
-                        {"type": "text", "text": question_sample},
-                    ]}
-                ],
-                'image':img_pil,
-                'answer':answer_sample,
-            })
-
-    if split == 'train':
-        random.shuffle(dataset)
-
-    if truncate is not None:
-        dataset = dataset[:truncate]
-
-    return dataset
 
 
 
@@ -654,3 +460,22 @@ class Test_Judger:
                 return {'result': 'wrong', 'reason': 'Parse failed, default to wrong'}
 
     
+
+
+API_KEY_ENV_ALIASES = {
+    "default": "OPENAI_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "dashscope": "DASHSCOPE_API_KEY",
+    "skd": "DASHSCOPE_API_KEY",
+}
+
+
+def resolve_api_key(api_key):
+    """Resolve CLI API key aliases without storing secrets in source code."""
+    if not api_key:
+        return os.getenv("OPENAI_API_KEY")
+    if api_key in API_KEY_ENV_ALIASES:
+        return os.getenv(API_KEY_ENV_ALIASES[api_key])
+    if api_key.startswith("env:"):
+        return os.getenv(api_key.split(":", 1)[1])
+    return api_key

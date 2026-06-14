@@ -1,0 +1,11 @@
+datasets
+numpy
+open-clip-torch
+pillow
+requests
+scikit-learn
+spacy
+nltk
+tqdm
+torch
+transformers

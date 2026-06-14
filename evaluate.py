@@ -12,12 +12,11 @@ from utils.prompt import query_prompt, query_system_prompt
 from retrieval.utils import RerietrievalClassifier, AnswerEvaluator, create_evaluator_inference_func, create_classifier_inference_func
 from utils.utils import (
     inference_chat_local,
-    inference_chat_api,
     get_cur_time,
     extract_answer, 
-    API_KEY_list,
+    resolve_api_key,
     parse_tag,
-    inference_chat_api_vllm
+    inference_chat_api_compatible
 )
 from retrieval.knowledge_base import (
     TagKnowledgeBase, 
@@ -28,6 +27,11 @@ from retrieval.knowledge_base import (
     ID_TO_ORGAN
 )
 from retrieval.Reranker import MedicalVisualHyDE
+
+
+def use_user_only_prompt(model_name):
+    """Some local Qwen2.5-VL checkpoints follow user-only vision prompts better."""
+    return "qwen2.5-vl-7b" in model_name.lower()
 
 
 #
@@ -44,7 +48,7 @@ from retrieval.Reranker import MedicalVisualHyDE
 
 class LLM():
     def __init__(self, args):
-        args.api_key = API_KEY_list.get(args.api_key)
+        args.api_key = resolve_api_key(args.api_key)
         self.model_name_or_path = args.model_name_or_path
         self.args = args
         
@@ -130,7 +134,7 @@ class LLM():
 
     def inference(self, chat):
         if self.args.infer_mode == "api":
-            return inference_chat_api_vllm(chat, self.args)
+            return inference_chat_api_compatible(chat, self.args)
         else:
             return inference_chat_local(chat, self.args)
     
@@ -288,7 +292,7 @@ class LLM():
             ]
         })
 
-        if self.args.model_name_or_path == 'Qwen2.5-VL-7B-Instruct':
+        if use_user_only_prompt(self.args.model_name_or_path):
             instruction_text = rf'''You are an expert Medical AI Assistant. Your task is to analyze medical images and answer clinical questions.
 Analyze the medical image and the provided knowledge (if any) to answer the question.
 
@@ -586,13 +590,13 @@ def main(args):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Training-free MedLLM - Tag-based Knowledge Base")
-    parser.add_argument("--model_name_or_path", "--model", type=str, default="qwen2.5-vl-instruct")
-    parser.add_argument("--evaluator_model", "--em", type=str, default="qwen2.5-vl-instruct", help="Model for answer evaluation")
-    parser.add_argument("--classifier_model", "--cm", type=str, default="qwen2.5-vl-instruct", help="Model for retrieval classification")
+    parser.add_argument("--model_name_or_path", "--model", type=str, default="Qwen3-VL-235B-A22B")
+    parser.add_argument("--evaluator_model", "--em", type=str, default="Qwen3-VL-235B-A22B", help="Model for answer evaluation")
+    parser.add_argument("--classifier_model", "--cm", type=str, default="Qwen3-VL-235B-A22B", help="Model for retrieval classification")
     parser.add_argument("--infer_mode", type=str, default="api", choices=["local", "api"], help="Inference mode")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
-    parser.add_argument("--api_key", "--ak", type=str, default='skd', help="API key for inference if using API mode")
-    parser.add_argument("--base_url", "--bu", type=str, default="https://genaiapi.shanghaitech.edu.cn/api/v1/start", help="API base URL for inference if using API mode")
+    parser.add_argument("--api_key", "--ak", type=str, default="env:DASHSCOPE_API_KEY", help="API key, env:VAR_NAME, or alias for inference if using API mode")
+    parser.add_argument("--base_url", "--bu", type=str, default="https://dashscope.aliyuncs.com/compatible-mode/v1", help="API base URL for inference if using API mode")
 
     parser.add_argument("--exp_name", "--en", type=str, default="slake", help="Experiment name")
     parser.add_argument("--data_split", type=str, default="test", help="Dataset split")
