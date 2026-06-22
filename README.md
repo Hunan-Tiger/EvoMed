@@ -18,8 +18,8 @@ Large local assets are intentionally not tracked: datasets, logs, checkpoints, g
 ## Setup
 
 ```bash
-conda create -n se-medvlm python=3.10 -y
-conda activate se-medvlm
+conda create -n evomed python=3.10 -y
+conda activate evomed
 pip install -r requirements.txt
 ```
 
