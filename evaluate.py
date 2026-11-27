@@ -15,6 +15,7 @@ from utils.utils import (
     get_cur_time,
     extract_answer, 
     resolve_api_key,
+    loggable_args,
     parse_tag,
     inference_chat_api_compatible
 )
@@ -26,7 +27,7 @@ from retrieval.knowledge_base import (
     ID_TO_MODALITY, 
     ID_TO_ORGAN
 )
-from retrieval.Reranker import MedicalVisualHyDE
+from retrieval.Reranker import MedicalVisualAugmentation
 
 
 def use_user_only_prompt(model_name):
@@ -69,7 +70,7 @@ class LLM():
         logging.info("=" * 80)
         logging.info("TEST INITIALIZATION")
         logging.info("=" * 80)
-        logging.info(f"Arguments: {self.args}")
+        logging.info("Arguments: %s", loggable_args(self.args))
         logging.info(f"Log file: {self.log_file}")
         
         # 2. 检查点配置
@@ -92,7 +93,7 @@ class LLM():
         self.formatted_special_knowledges = ""
         self.total_tokens_consumed = 0
 
-        self.reranker = MedicalVisualHyDE(device='cuda')
+        self.reranker = MedicalVisualAugmentation(device='cuda')
         
         # 4. 加载推理模型 (仅在 local 模式下)
         if self.args.infer_mode != "api":

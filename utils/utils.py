@@ -470,6 +470,14 @@ API_KEY_ENV_ALIASES = {
 }
 
 
+def loggable_args(args):
+    """Return a copy of the CLI arguments with the API key redacted."""
+    values = vars(args).copy()
+    if "api_key" in values:
+        values["api_key"] = "[REDACTED]"
+    return values
+
+
 def resolve_api_key(api_key):
     """Resolve CLI API key aliases without storing secrets in source code."""
     if not api_key:
