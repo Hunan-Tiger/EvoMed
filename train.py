@@ -6,7 +6,7 @@ import os
 import argparse
 from typing import List, Dict
 from utils.prompt import query_system_prompt, query_prompt, summarize_system_prompt, summarize_prompt, controller_system_prompt, controller_prompt
-from utils.utils import inference_chat_local, get_cur_time, extract_answer, resolve_api_key, parse_tag, inference_chat_api_compatible
+from utils.utils import inference_chat_local, get_cur_time, extract_answer, resolve_api_key, loggable_args, parse_tag, inference_chat_api_compatible
 import logging
 import sys
 import pickle
@@ -47,7 +47,7 @@ class LLM():
         logging.info("=" * 80)
         logging.info("TRAINING INITIALIZATION")
         logging.info("=" * 80)
-        logging.info(f"Arguments: {self.args}")
+        logging.info("Arguments: %s", loggable_args(self.args))
         logging.info(f"Log file: {self.log_file}")
 
         # 检查点配置
